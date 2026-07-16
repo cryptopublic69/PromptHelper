@@ -17,12 +17,16 @@ import {
   LockKeyhole,
   LockOpen,
   Minus,
+  Moon,
   Pencil,
+  Pin,
   Plus,
   Search,
+  Settings,
   ShieldCheck,
   Square,
   Sparkles,
+  Sun,
   Trash2,
   Upload,
   X,
@@ -32,6 +36,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -39,18 +44,23 @@ import {
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import appIconUrl from "../src-tauri/icons/app-icon.svg";
 import "./App.css";
 import { api } from "./lib/api";
 import {
   cloneData,
   countPrompts,
+  createPromptRecord,
   getCategoryNames,
   getCategories,
   getTypes,
+  isPromptPinned,
   mergePromptData,
+  normalizePromptData,
   promptContent,
   promptTitle,
   searchPrompts,
+  withPromptPinned,
 } from "./lib/data";
 import type {
   AppStatus,
@@ -62,7 +72,11 @@ import type {
 
 const TAB_STORAGE_KEY = "prompt-helper-v5-tabs";
 const ACTIVE_TAB_STORAGE_KEY = "prompt-helper-v5-active-tab";
+const FONT_SIZE_STORAGE_KEY = "prompt-helper-v5-font-size";
+const THEME_STORAGE_KEY = "prompt-helper-v5-theme";
 const appWindow = getCurrentWindow();
+
+type ThemeMode = "dark" | "light";
 
 const makeId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -71,6 +85,14 @@ const makeId = () =>
 
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
+
+const readInitialFontSize = () => {
+  const stored = Number(localStorage.getItem(FONT_SIZE_STORAGE_KEY));
+  return Number.isFinite(stored) ? Math.min(20, Math.max(14, stored)) : 16;
+};
+
+const readInitialTheme = (): ThemeMode =>
+  localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
 
 type EntityDialog = {
   mode:
@@ -203,7 +225,7 @@ function UnlockScreen({
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
       <section className="unlock-card">
-        <div className="unlock-mark"><LockKeyhole size={28} /></div>
+        <div className="unlock-mark"><img src={appIconUrl} alt="" /></div>
         <div className="eyebrow">PROMPTHELPER · SECURE LIBRARY</div>
         <h1>欢迎回来</h1>
         <form onSubmit={submit}>
@@ -248,6 +270,9 @@ function App() {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [importDraft, setImportDraft] = useState<PromptData | null>(null);
   const [securityMode, setSecurityMode] = useState<"manage" | "enable" | "change" | "disable" | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [fontSize, setFontSize] = useState(readInitialFontSize);
+  const [theme, setTheme] = useState<ThemeMode>(readInitialTheme);
   const [contextMenu, setContextMenu] = useState<({ x: number; y: number } & PromptLocation) | null>(null);
   const [treeActionMenuKey, setTreeActionMenuKey] = useState<string | null>(null);
   const [promptActionMenuKey, setPromptActionMenuKey] = useState<string | null>(null);
@@ -281,6 +306,7 @@ function App() {
     typeName: string;
     categoryName: string;
     sourceIndex: number;
+    sourcePinned: boolean;
     pointerId: number;
     startX: number;
     startY: number;
@@ -350,6 +376,17 @@ function App() {
     localStorage.setItem(TAB_STORAGE_KEY, JSON.stringify(tabs));
     localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTabId);
   }, [tabs, activeTabId, phase]);
+
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${fontSize}px`;
+    localStorage.setItem(FONT_SIZE_STORAGE_KEY, String(fontSize));
+  }, [fontSize]);
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
 
   useEffect(() => {
     if (!toast) return;
@@ -460,10 +497,11 @@ function App() {
   };
 
   const persist = async (next: PromptData, message: string, nextPassword = password) => {
+    const cleaned = normalizePromptData(next).data;
     setBusy(true);
     try {
-      await api.save(next, nextPassword);
-      setData(next);
+      await api.save(cleaned, nextPassword);
+      setData(cleaned);
       setToast({ kind: "success", message });
       return true;
     } catch (error) {
@@ -473,6 +511,12 @@ function App() {
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (phase !== "ready" || busy) return;
+    const normalized = normalizePromptData(data);
+    if (normalized.changed) void persist(normalized.data, "已升级资料记录结构");
+  }, [data, phase]);
 
   const patchTab = (id: string, patch: Partial<WorkspaceTab>) => {
     setTabs((current) => current.map((tab) => (tab.id === id ? { ...tab, ...patch } : tab)));
@@ -527,7 +571,7 @@ function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (phase !== "ready" || entityDialog || promptDialog || promptViewer || confirmation || moveLocation || importDraft || securityMode) return;
+      if (phase !== "ready" || entityDialog || promptDialog || promptViewer || confirmation || moveLocation || importDraft || securityMode || settingsOpen) return;
       if (event.ctrlKey && event.key.toLowerCase() === "t") {
         event.preventDefault(); addTab();
       } else if (event.ctrlKey && event.key.toLowerCase() === "w") {
@@ -732,32 +776,73 @@ function App() {
   const savePrompt = async (title: string, content: string) => {
     if (!activeTab || !promptDialog || (!title.trim() && !content.trim())) return;
     const next = cloneData(data);
-    const newPrompt: PromptItem = { title: title.trim(), content: content.trim() };
+    const newPrompt = createPromptRecord(title.trim(), content.trim());
     if (promptDialog.mode === "add") {
-      getCategories(next, activeTab.typeName)[activeTab.categoryName].push(newPrompt);
+      const prompts = getCategories(next, activeTab.typeName)[activeTab.categoryName];
+      const firstUnpinnedIndex = prompts.findIndex((prompt) => !isPromptPinned(prompt));
+      prompts.splice(firstUnpinnedIndex < 0 ? prompts.length : firstUnpinnedIndex, 0, newPrompt);
       await persist(next, "提示词已添加");
     } else if (promptDialog.location) {
       const { typeName, categoryName, index } = promptDialog.location;
-      getCategories(next, typeName)[categoryName][index] = newPrompt;
+      const prompts = getCategories(next, typeName)[categoryName];
+      const existing = prompts[index];
+      const now = new Date().toISOString();
+      prompts[index] = typeof existing === "string"
+        ? { ...newPrompt, createdAt: null, updatedAt: now, sortOrder: index }
+        : {
+            ...existing,
+            title: newPrompt.title,
+            content: newPrompt.content,
+            updatedAt: now,
+          };
       await persist(next, "提示词已更新");
     }
     setPromptDialog(null);
   };
 
-  const mutatePrompt = async (
-    location: PromptLocation,
-    mode: "top" | "delete",
-  ) => {
+  const deletePrompt = async (location: PromptLocation) => {
     const next = cloneData(data);
     const prompts = getCategories(next, location.typeName)[location.categoryName];
     if (!prompts || !prompts[location.index]) return;
-    if (mode === "delete") prompts.splice(location.index, 1);
-    if (mode === "top" && location.index > 0) prompts.unshift(...prompts.splice(location.index, 1));
-    await persist(next, mode === "delete" ? "提示词已删除" : "提示词顺序已更新");
+    prompts.splice(location.index, 1);
+    await persist(next, "提示词已删除");
+  };
+
+  const togglePromptPin = async (location: PromptLocation) => {
+    const next = cloneData(data);
+    const prompts = getCategories(next, location.typeName)[location.categoryName];
+    if (!prompts || !prompts[location.index]) return;
+
+    const wasPinned = isPromptPinned(prompts[location.index]);
+    const [prompt] = prompts.splice(location.index, 1);
+    const updated = withPromptPinned(prompt, !wasPinned);
+    if (!wasPinned) {
+      prompts.unshift(updated);
+    } else {
+      const firstUnpinnedIndex = prompts.findIndex((item) => !isPromptPinned(item));
+      prompts.splice(firstUnpinnedIndex < 0 ? prompts.length : firstUnpinnedIndex, 0, updated);
+    }
+    await persist(next, wasPinned ? "已取消 Pin" : "已 Pin 到分类顶部");
+  };
+
+  const movePromptToTop = async (location: PromptLocation) => {
+    const next = cloneData(data);
+    const prompts = getCategories(next, location.typeName)[location.categoryName];
+    if (!prompts || !prompts[location.index]) return;
+
+    const [prompt] = prompts.splice(location.index, 1);
+    if (isPromptPinned(prompt)) {
+      prompts.unshift(prompt);
+    } else {
+      const firstUnpinnedIndex = prompts.findIndex((item) => !isPromptPinned(item));
+      prompts.splice(firstUnpinnedIndex < 0 ? prompts.length : firstUnpinnedIndex, 0, prompt);
+    }
+    await persist(next, "提示词已置顶");
   };
 
   const resolvePromptDropTarget = (
     sourceIndex: number,
+    sourcePinned: boolean,
     clientX: number,
     clientY: number,
   ) => {
@@ -766,6 +851,7 @@ function App() {
       ?.closest<HTMLElement>(".prompt-card[data-prompt-index]");
     const targetIndex = Number(card?.dataset.promptIndex);
     if (!card || !Number.isInteger(targetIndex) || targetIndex === sourceIndex) return null;
+    if ((card.dataset.promptPinned === "true") !== sourcePinned) return null;
 
     const bounds = card.getBoundingClientRect();
     return {
@@ -793,6 +879,7 @@ function App() {
     const next = cloneData(data);
     const prompts = getCategories(next, typeName)[categoryName];
     if (!prompts || !prompts[sourceIndex] || !prompts[targetIndex]) return;
+    if (isPromptPinned(prompts[sourceIndex]) !== isPromptPinned(prompts[targetIndex])) return;
 
     const [moved] = prompts.splice(sourceIndex, 1);
     let insertAt = targetIndex - (sourceIndex < targetIndex ? 1 : 0);
@@ -806,7 +893,7 @@ function App() {
     message: promptTitle(location.prompt) || promptContent(location.prompt).slice(0, 72),
     confirmLabel: "确认删除",
     danger: true,
-    action: () => mutatePrompt(location, "delete"),
+    action: () => deletePrompt(location),
   });
 
   const movePrompt = async (targetType: string, targetCategory: string) => {
@@ -814,7 +901,13 @@ function App() {
     const next = cloneData(data);
     const source = getCategories(next, moveLocation.typeName)[moveLocation.categoryName];
     const [moved] = source.splice(moveLocation.index, 1);
-    getCategories(next, targetType)[targetCategory].push(moved);
+    const target = getCategories(next, targetType)[targetCategory];
+    if (isPromptPinned(moved)) {
+      const firstUnpinnedIndex = target.findIndex((prompt) => !isPromptPinned(prompt));
+      target.splice(firstUnpinnedIndex < 0 ? target.length : firstUnpinnedIndex, 0, moved);
+    } else {
+      target.push(moved);
+    }
     if (await persist(next, `已移动到「${targetType} / ${targetCategory}」`)) setMoveLocation(null);
   };
 
@@ -941,16 +1034,17 @@ function App() {
           <button className="new-tab" onClick={addTab} title="新建标签 (Ctrl+T)"><Plus size={17} /></button>
         </div>
         <div className="library-actions">
-          <button onClick={importFile} title="导入 JSON"><Upload size={17} /></button>
-          <button onClick={exportFile} title="导出明文 JSON"><Download size={17} /></button>
+          <button onClick={importFile} title="导入 JSON"><Download size={17} /></button>
+          <button onClick={exportFile} title="导出明文 JSON"><Upload size={17} /></button>
           <button onClick={() => setSecurityMode("manage")} title="数据安全"><ShieldCheck size={18} /></button>
+          <button onClick={() => setSettingsOpen(true)} title="设置"><Settings size={18} /></button>
         </div>
         <WindowControls />
       </div>
 
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark"><Sparkles size={20} /></div>
+          <div className="brand-mark"><img src={appIconUrl} alt="" /></div>
           <div><strong>PromptHelper</strong><span>提示词工作台 · V5</span></div>
         </div>
 
@@ -1215,7 +1309,11 @@ function App() {
                 const title = promptTitle(location.prompt);
                 const content = promptContent(location.prompt);
                 const global = Boolean(activeTab.search.trim());
-                const sortable = !global && !busy && categoryPrompts.length > 1;
+                const pinned = isPromptPinned(location.prompt);
+                const locationPrompts = getCategories(data, location.typeName)[location.categoryName] || [];
+                const firstUnpinnedIndex = locationPrompts.findIndex((prompt) => !isPromptPinned(prompt));
+                const groupStartIndex = pinned ? 0 : firstUnpinnedIndex < 0 ? locationPrompts.length : firstUnpinnedIndex;
+                const sortable = !global && !busy && locationPrompts.filter((prompt) => isPromptPinned(prompt) === pinned).length > 1;
                 const promptActionsKey = `prompt:${location.typeName}\u0000${location.categoryName}\u0000${location.index}`;
                 const promptActionsOpen = promptActionMenuKey === promptActionsKey;
                 const dragging = !global && dragPromptIndex === location.index;
@@ -1223,9 +1321,10 @@ function App() {
                   ? promptDropTarget.position
                   : null;
                 return <article
-                  className={`prompt-card ${sortable ? "sortable" : ""} ${dragging ? "dragging" : ""} ${dropPosition ? `drop-${dropPosition}` : ""}`}
+                  className={`prompt-card ${global ? "search-result" : ""} ${pinned ? "pinned" : ""} ${sortable ? "sortable" : ""} ${dragging ? "dragging" : ""} ${dropPosition ? `drop-${dropPosition}` : ""}`}
                   key={`${location.typeName}-${location.categoryName}-${location.index}-${content.slice(0, 24)}`}
                   data-prompt-index={location.index}
+                  data-prompt-pinned={pinned}
                   onContextMenu={(event) => { event.preventDefault(); setContextMenu({ ...location, x: event.clientX, y: event.clientY }); }}
                   onMouseEnter={() => setPromptActionMenuKey((current) => (
                     current && current !== promptActionsKey ? null : current
@@ -1234,9 +1333,7 @@ function App() {
                     current === promptActionsKey ? null : current
                   ))}
                 >
-                  {global ? (
-                    <div className="prompt-number">{String(displayIndex + 1).padStart(2, "0")}</div>
-                  ) : (
+                  {!global && (
                     <div
                       className="prompt-drag-handle"
                       onPointerDown={(event) => {
@@ -1247,6 +1344,7 @@ function App() {
                           typeName: location.typeName,
                           categoryName: location.categoryName,
                           sourceIndex: location.index,
+                          sourcePinned: pinned,
                           pointerId: event.pointerId,
                           startX: event.clientX,
                           startY: event.clientY,
@@ -1266,7 +1364,7 @@ function App() {
                         }
                         event.preventDefault();
                         event.stopPropagation();
-                        const target = resolvePromptDropTarget(drag.sourceIndex, event.clientX, event.clientY);
+                        const target = resolvePromptDropTarget(drag.sourceIndex, drag.sourcePinned, event.clientX, event.clientY);
                         setPromptDropTarget((current) => (
                           current?.index === target?.index && current?.position === target?.position
                             ? current
@@ -1277,7 +1375,7 @@ function App() {
                         const drag = promptPointerDragRef.current;
                         if (!drag || drag.pointerId !== event.pointerId) return;
                         const target = drag.active
-                          ? resolvePromptDropTarget(drag.sourceIndex, event.clientX, event.clientY)
+                          ? resolvePromptDropTarget(drag.sourceIndex, drag.sourcePinned, event.clientX, event.clientY)
                           : null;
                         if (drag.active) {
                           event.preventDefault();
@@ -1308,12 +1406,14 @@ function App() {
                       aria-label={`拖动第 ${displayIndex + 1} 条提示词排序`}
                     >
                       <GripVertical size={14} />
-                      <span>{String(displayIndex + 1).padStart(2, "0")}</span>
                     </div>
                   )}
                   <button className="copy-button" onClick={() => copyPrompt(location.prompt)}><Copy size={17} /><span>复制</span></button>
                   <div className="prompt-content">
-                    {global && <div className="source-pill">{location.typeName}<ChevronRight size={11} />{location.categoryName}</div>}
+                    {(global || pinned) && <div className="prompt-content-flags">
+                      {global && <div className="source-pill">{location.typeName}<ChevronRight size={11} />{location.categoryName}</div>}
+                      {pinned && <div className="pin-pill"><Pin size={10} />PIN</div>}
+                    </div>}
                     {title && <h3>{title}</h3>}
                     <p>{content || <span className="muted-copy">（无正文）</span>}</p>
                   </div>
@@ -1333,7 +1433,8 @@ function App() {
                     <div className={`prompt-row-actions ${promptActionsOpen ? "open" : ""}`}>
                       <button onClick={() => { setPromptViewer(location); setPromptActionMenuKey(null); }} title="查看完整内容"><Eye size={16} /></button>
                       <button onClick={() => { setPromptDialog({ mode: "edit", location }); setPromptActionMenuKey(null); }} title="编辑"><Pencil size={16} /></button>
-                      <button onClick={() => { void mutatePrompt(location, "top"); setPromptActionMenuKey(null); }} disabled={location.index === 0} title="置顶"><ChevronsUp size={16} /></button>
+                      <button onClick={() => { void movePromptToTop(location); setPromptActionMenuKey(null); }} disabled={location.index === groupStartIndex} title={pinned ? "置顶到 Pin 分组第一位" : "置顶到普通分组第一位"}><ChevronsUp size={16} /></button>
+                      <button className={pinned ? "pin-active" : ""} onClick={() => { void togglePromptPin(location); setPromptActionMenuKey(null); }} title={pinned ? "取消 Pin" : "Pin 到顶部"}><Pin size={16} /></button>
                       <button onClick={() => { setMoveLocation(location); setPromptActionMenuKey(null); }} title="移动到"><FolderInput size={16} /></button>
                       <button className="danger" onClick={() => { requestDeletePrompt(location); setPromptActionMenuKey(null); }} title="删除"><Trash2 size={16} /></button>
                     </div>
@@ -1366,7 +1467,8 @@ function App() {
       {contextMenu && <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
         <button onClick={() => { copyPrompt(contextMenu.prompt); setContextMenu(null); }}><Copy size={15} />复制</button>
         <button onClick={() => { setPromptDialog({ mode: "edit", location: contextMenu }); setContextMenu(null); }}><Pencil size={15} />编辑</button>
-        <button onClick={() => { mutatePrompt(contextMenu, "top"); setContextMenu(null); }}><ChevronsUp size={15} />置顶</button>
+        <button onClick={() => { void movePromptToTop(contextMenu); setContextMenu(null); }}><ChevronsUp size={15} />置顶</button>
+        <button onClick={() => { void togglePromptPin(contextMenu); setContextMenu(null); }}><Pin size={15} />{isPromptPinned(contextMenu.prompt) ? "取消 Pin" : "Pin 到顶部"}</button>
         <button onClick={() => { setMoveLocation(contextMenu); setContextMenu(null); }}><FolderInput size={15} />移动到…</button>
         <div />
         <button className="danger-text" onClick={() => { requestDeletePrompt(contextMenu); setContextMenu(null); }}><Trash2 size={15} />删除</button>
@@ -1374,11 +1476,20 @@ function App() {
 
       {entityDialog && <EntityModal dialog={entityDialog} onClose={() => setEntityDialog(null)} onSave={saveEntity} />}
       {promptDialog && <PromptEditor dialog={promptDialog} onClose={() => setPromptDialog(null)} onSave={savePrompt} />}
-      {promptViewer && <PromptViewer location={promptViewer} onClose={() => setPromptViewer(null)} onCopy={() => { void copyPrompt(promptViewer.prompt); }} />}
+      {promptViewer && <PromptViewer
+        location={promptViewer}
+        onClose={() => setPromptViewer(null)}
+        onCopy={() => { void copyPrompt(promptViewer.prompt); }}
+        onEdit={() => {
+          setPromptDialog({ mode: "edit", location: promptViewer });
+          setPromptViewer(null);
+        }}
+      />}
       {confirmation && <ConfirmModal confirmation={confirmation} onClose={() => setConfirmation(null)} />}
       {moveLocation && <MoveModal data={data} source={moveLocation} onClose={() => setMoveLocation(null)} onMove={movePrompt} />}
       {importDraft && <ImportModal onClose={() => setImportDraft(null)} onApply={applyImport} />}
       {securityMode && <SecurityModal mode={securityMode} encrypted={Boolean(password)} onMode={setSecurityMode} onClose={() => setSecurityMode(null)} onApply={applySecurity} />}
+      {settingsOpen && <SettingsModal fontSize={fontSize} theme={theme} onFontSize={setFontSize} onTheme={setTheme} onClose={() => setSettingsOpen(false)} />}
     </main>
   );
 }
@@ -1428,13 +1539,13 @@ function PromptEditor({ dialog, onClose, onSave }: { dialog: PromptDialog; onClo
   </Modal>;
 }
 
-function PromptViewer({ location, onClose, onCopy }: { location: PromptLocation; onClose: () => void; onCopy: () => void }) {
+function PromptViewer({ location, onClose, onCopy, onEdit }: { location: PromptLocation; onClose: () => void; onCopy: () => void; onEdit: () => void }) {
   const title = promptTitle(location.prompt);
   const content = promptContent(location.prompt);
   return <Modal wide title={title || "提示词详情"} subtitle={`${location.typeName} / ${location.categoryName}`} onClose={onClose} icon={<Eye size={19} />}>
     <div className="prompt-viewer-content">{content || <span>（无正文）</span>}</div>
     <div className="editor-meta"><span>{content.length} 字符</span><span>完整内容</span></div>
-    <div className="modal-actions"><button className="secondary-button" onClick={onClose}>关闭</button><button className="primary-button" onClick={onCopy}><Copy size={16} />复制内容</button></div>
+    <div className="modal-actions"><button className="secondary-button" onClick={onClose}>关闭</button><button className="secondary-button" onClick={onEdit}><Pencil size={16} />编辑</button><button className="primary-button" onClick={onCopy}><Copy size={16} />复制内容</button></div>
   </Modal>;
 }
 
@@ -1447,15 +1558,67 @@ function ConfirmModal({ confirmation, onClose }: { confirmation: Confirmation; o
 }
 
 function MoveModal({ data, source, onClose, onMove }: { data: PromptData; source: PromptLocation; onClose: () => void; onMove: (typeName: string, categoryName: string) => void }) {
-  const destinations = getTypes(data).flatMap((typeName) => getCategoryNames(data, typeName).map((categoryName) => ({ typeName, categoryName }))).filter((item) => item.typeName !== source.typeName || item.categoryName !== source.categoryName);
-  const [selected, setSelected] = useState(destinations[0] ? `${destinations[0].typeName}\u0000${destinations[0].categoryName}` : "");
-  return <Modal title="移动提示词" subtitle={`当前位置：${source.typeName} / ${source.categoryName}`} onClose={onClose} icon={<FolderInput size={18} />}>
-    <label className="field-label">目标分类</label>
-    <select className="text-input select-input" value={selected} onChange={(event) => setSelected(event.target.value)}>
-      {destinations.map((item) => <option key={`${item.typeName}/${item.categoryName}`} value={`${item.typeName}\u0000${item.categoryName}`}>{item.typeName} / {item.categoryName}</option>)}
-    </select>
-    {!destinations.length && <p className="form-error">请先创建另一个分类。</p>}
-    <div className="modal-actions"><button className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!selected} onClick={() => { const [typeName, categoryName] = selected.split("\u0000"); onMove(typeName, categoryName); }}>移动</button></div>
+  const types = getTypes(data);
+  const destinationCount = types.reduce((total, typeName) => (
+    total + getCategoryNames(data, typeName).filter((categoryName) => (
+      typeName !== source.typeName || categoryName !== source.categoryName
+    )).length
+  ), 0);
+  const [expandedTypeName, setExpandedTypeName] = useState("");
+  const [selected, setSelected] = useState("");
+  const [selectedTypeName, selectedCategoryName] = selected
+    ? selected.split("\u0000")
+    : ["", ""];
+
+  return <Modal wide title="移动提示词" subtitle={`当前位置：${source.typeName} / ${source.categoryName}`} onClose={onClose} icon={<FolderInput size={18} />}>
+    <div className="move-tree-heading"><span>选择目标分类</span><em>{destinationCount} 个可用位置</em></div>
+    <div className="move-tree">
+      {types.map((typeName) => {
+        const categories = getCategoryNames(data, typeName);
+        const expanded = expandedTypeName === typeName;
+        const containsSelection = selectedTypeName === typeName;
+        return <div className={`move-tree-group ${expanded ? "expanded" : ""}`} key={typeName}>
+          <button
+            className={`move-tree-type ${containsSelection ? "contains-selection" : ""}`}
+            onClick={() => setExpandedTypeName((current) => current === typeName ? "" : typeName)}
+            aria-expanded={expanded}
+          >
+            <ChevronRight size={15} />
+            <Layers3 size={16} />
+            <span>{typeName}</span>
+            <em>{categories.length}</em>
+          </button>
+          {expanded && <div className="move-tree-categories">
+            {categories.map((categoryName) => {
+              const current = typeName === source.typeName && categoryName === source.categoryName;
+              const value = `${typeName}\u0000${categoryName}`;
+              const selectedTarget = selected === value;
+              const promptCount = getCategories(data, typeName)[categoryName].length;
+              return <button
+                className={`move-tree-category ${current ? "current" : ""} ${selectedTarget ? "selected" : ""}`}
+                key={categoryName}
+                disabled={current}
+                onClick={() => setSelected(value)}
+              >
+                <Folder size={15} />
+                <span>{categoryName}</span>
+                {current ? <small>当前位置</small> : selectedTarget ? <Check size={15} /> : <em>{promptCount}</em>}
+              </button>;
+            })}
+            {!categories.length && <div className="move-tree-empty">该类型下还没有分类</div>}
+          </div>}
+        </div>;
+      })}
+      {!types.length && <div className="move-tree-empty move-tree-empty-root">资料库中还没有可用分类</div>}
+    </div>
+
+    <div className={`move-target-summary ${selected ? "ready" : ""}`}>
+      <div><FolderInput size={17} /></div>
+      <span>{selected ? "将移动到" : "尚未选择目标分类"}</span>
+      {selected && <strong>{selectedTypeName}<ChevronRight size={13} />{selectedCategoryName}</strong>}
+    </div>
+    {!destinationCount && <p className="form-error move-tree-error">请先在资料库中创建另一个分类。</p>}
+    <div className="modal-actions"><button className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!selected} onClick={() => onMove(selectedTypeName, selectedCategoryName)}><FolderInput size={16} />确认移动</button></div>
   </Modal>;
 }
 
@@ -1465,6 +1628,53 @@ function ImportModal({ onClose, onApply }: { onClose: () => void; onApply: (mode
       <button onClick={() => onApply("merge")}><div><Plus size={20} /></div><strong>合并导入</strong><p>保留现有资料，仅加入不重复的内容。推荐日常使用。</p></button>
       <button className="choice-danger" onClick={() => onApply("replace")}><div><Download size={20} /></div><strong>覆盖导入</strong><p>完全替换当前资料库。现有内容不会保留。</p></button>
     </div>
+  </Modal>;
+}
+
+function SettingsModal({ fontSize, theme, onFontSize, onTheme, onClose }: { fontSize: number; theme: ThemeMode; onFontSize: (size: number) => void; onTheme: (theme: ThemeMode) => void; onClose: () => void }) {
+  return <Modal title="设置" subtitle="调整 PromptHelper 的界面显示方式" onClose={onClose} icon={<Settings size={19} />}>
+    <section className="settings-section">
+      <header>
+        <div><strong>外观主题</strong><p>切换整个工作台、弹窗和登录界面的颜色</p></div>
+        <span>{theme === "dark" ? "暗黑" : "白色"}</span>
+      </header>
+      <div className="theme-options">
+        <button className={theme === "dark" ? "active" : ""} onClick={() => onTheme("dark")} aria-pressed={theme === "dark"}>
+          <div className="theme-option-icon dark"><Moon size={18} /></div>
+          <span><strong>暗黑模式</strong><small>深色背景，适合低光环境</small></span>
+          {theme === "dark" && <Check size={16} />}
+        </button>
+        <button className={theme === "light" ? "active" : ""} onClick={() => onTheme("light")} aria-pressed={theme === "light"}>
+          <div className="theme-option-icon light"><Sun size={18} /></div>
+          <span><strong>白色模式</strong><small>明亮背景，适合日间使用</small></span>
+          {theme === "light" && <Check size={16} />}
+        </button>
+      </div>
+    </section>
+    <section className="settings-section">
+      <header>
+        <div><strong>界面字号</strong><p>同步调整资料树、内容列表和弹窗文字</p></div>
+        <span>{fontSize}px</span>
+      </header>
+      <div className="font-size-control">
+        <small>A</small>
+        <input
+          type="range"
+          min="14"
+          max="20"
+          step="1"
+          value={fontSize}
+          onChange={(event) => onFontSize(Number(event.target.value))}
+          aria-label="界面字号"
+        />
+        <strong>A</strong>
+      </div>
+      <div className="font-size-presets">
+        {[14, 16, 18, 20].map((size) => <button key={size} className={fontSize === size ? "active" : ""} onClick={() => onFontSize(size)}>{size === 14 ? "紧凑" : size === 16 ? "默认" : size === 18 ? "较大" : "特大"}</button>)}
+      </div>
+      <div className="font-size-preview"><span>预览</span><p>提示词资料库 · PromptHelper</p></div>
+    </section>
+    <div className="modal-actions"><button className="secondary-button" onClick={() => { onFontSize(16); onTheme("dark"); }}>恢复默认</button><button className="primary-button" onClick={onClose}>完成</button></div>
   </Modal>;
 }
 

@@ -1,6 +1,11 @@
 export type PromptRecord = {
+  id: string;
   title: string;
   content: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  sortOrder: number;
+  pinned?: boolean;
 };
 
 export type PromptItem = string | PromptRecord;

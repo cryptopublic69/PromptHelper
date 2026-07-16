@@ -4,13 +4,35 @@ import type {
   PromptData,
   PromptItem,
   PromptLocation,
+  PromptRecord,
 } from "../types";
+
+const LEGACY_CATEGORY_ORDER_KEY = "_category_order";
 
 export const cloneData = (data: PromptData): PromptData => structuredClone(data);
 
+export function createPromptId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `prompt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+export function createPromptRecord(title: string, content: string): PromptRecord {
+  const now = new Date().toISOString();
+  return {
+    id: createPromptId(),
+    title,
+    content,
+    createdAt: now,
+    updatedAt: now,
+    sortOrder: 0,
+  };
+}
+
 export function getTypes(data: PromptData): string[] {
   const available = Object.keys(data).filter(
-    (key) => key !== "_type_order" && isCategories(data[key]),
+    (key) => key !== "_type_order" && key !== LEGACY_CATEGORY_ORDER_KEY && isCategories(data[key]),
   );
   const ordered = Array.isArray(data._type_order)
     ? data._type_order.filter((name) => available.includes(name))
@@ -28,7 +50,78 @@ export function getCategories(data: PromptData, typeName: string): PromptCategor
 }
 
 export function getCategoryNames(data: PromptData, typeName: string): string[] {
-  return Object.keys(getCategories(data, typeName));
+  return Object.keys(getCategories(data, typeName)).filter(
+    (name) => name !== LEGACY_CATEGORY_ORDER_KEY,
+  );
+}
+
+export function stripLegacyCategoryOrder(data: PromptData): { data: PromptData; changed: boolean } {
+  const affectedTypes = getTypes(data).filter((typeName) => (
+    Object.prototype.hasOwnProperty.call(getCategories(data, typeName), LEGACY_CATEGORY_ORDER_KEY)
+  ));
+  const hasTopLevelKey = Object.prototype.hasOwnProperty.call(data, LEGACY_CATEGORY_ORDER_KEY);
+  if (!hasTopLevelKey && !affectedTypes.length) return { data, changed: false };
+
+  const next = cloneData(data);
+  delete next[LEGACY_CATEGORY_ORDER_KEY];
+  for (const typeName of affectedTypes) {
+    delete getCategories(next, typeName)[LEGACY_CATEGORY_ORDER_KEY];
+  }
+  return { data: next, changed: true };
+}
+
+function nullableTimestamp(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function normalizePromptData(data: PromptData): { data: PromptData; changed: boolean } {
+  const stripped = stripLegacyCategoryOrder(data);
+  const next = cloneData(stripped.data);
+  const usedIds = new Set<string>();
+  let changed = stripped.changed;
+
+  for (const typeName of getTypes(next)) {
+    const categories = getCategories(next, typeName);
+    for (const categoryName of getCategoryNames(next, typeName)) {
+      const prompts = categories[categoryName];
+      prompts.forEach((prompt, index) => {
+        const source = typeof prompt === "string" ? null : prompt;
+        const sourceId = typeof source?.id === "string" ? source.id.trim() : "";
+        const id = sourceId && !usedIds.has(sourceId) ? sourceId : createPromptId();
+        const title = typeof source?.title === "string" ? source.title : "";
+        const content = typeof prompt === "string"
+          ? prompt
+          : typeof source?.content === "string" ? source.content : "";
+        const createdAt = nullableTimestamp(source?.createdAt);
+        const updatedAt = nullableTimestamp(source?.updatedAt);
+        const normalized: PromptRecord = {
+          ...(source || {}),
+          id,
+          title,
+          content,
+          createdAt,
+          updatedAt,
+          sortOrder: index,
+        };
+
+        usedIds.add(id);
+        if (
+          !source ||
+          source.id !== normalized.id ||
+          source.title !== normalized.title ||
+          source.content !== normalized.content ||
+          source.createdAt !== normalized.createdAt ||
+          source.updatedAt !== normalized.updatedAt ||
+          source.sortOrder !== normalized.sortOrder
+        ) {
+          prompts[index] = normalized;
+          changed = true;
+        }
+      });
+    }
+  }
+
+  return changed ? { data: next, changed: true } : { data, changed: false };
 }
 
 export function promptTitle(prompt: PromptItem): string {
@@ -37,6 +130,22 @@ export function promptTitle(prompt: PromptItem): string {
 
 export function promptContent(prompt: PromptItem): string {
   return typeof prompt === "string" ? prompt : prompt.content || "";
+}
+
+export function isPromptPinned(prompt: PromptItem): boolean {
+  return typeof prompt !== "string" && prompt.pinned === true;
+}
+
+export function withPromptPinned(prompt: PromptItem, pinned: boolean): PromptItem {
+  if (typeof prompt === "string") {
+    const next = createPromptRecord("", prompt);
+    if (pinned) next.pinned = true;
+    return next;
+  }
+  const next = { ...prompt };
+  if (pinned) next.pinned = true;
+  else delete next.pinned;
+  return next;
 }
 
 export function samePrompt(a: PromptItem, b: PromptItem): boolean {
