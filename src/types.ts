@@ -6,6 +6,7 @@ export type PromptRecord = {
   updatedAt: string | null;
   sortOrder: number;
   pinned?: boolean;
+  unpinnedPosition?: number;
 };
 
 export type PromptItem = string | PromptRecord;

@@ -54,6 +54,7 @@ import {
   getCategoryNames,
   getCategories,
   getTypes,
+  insertPromptByCreatedAt,
   isPromptPinned,
   mergePromptData,
   normalizePromptData,
@@ -779,8 +780,7 @@ function App() {
     const newPrompt = createPromptRecord(title.trim(), content.trim());
     if (promptDialog.mode === "add") {
       const prompts = getCategories(next, activeTab.typeName)[activeTab.categoryName];
-      const firstUnpinnedIndex = prompts.findIndex((prompt) => !isPromptPinned(prompt));
-      prompts.splice(firstUnpinnedIndex < 0 ? prompts.length : firstUnpinnedIndex, 0, newPrompt);
+      insertPromptByCreatedAt(prompts, newPrompt);
       await persist(next, "提示词已添加");
     } else if (promptDialog.location) {
       const { typeName, categoryName, index } = promptDialog.location;
@@ -814,13 +814,26 @@ function App() {
     if (!prompts || !prompts[location.index]) return;
 
     const wasPinned = isPromptPinned(prompts[location.index]);
+    const firstUnpinnedBefore = prompts.findIndex((item) => !isPromptPinned(item));
     const [prompt] = prompts.splice(location.index, 1);
     const updated = withPromptPinned(prompt, !wasPinned);
     if (!wasPinned) {
+      if (typeof updated !== "string") {
+        updated.unpinnedPosition = Math.max(
+          0,
+          location.index - (firstUnpinnedBefore < 0 ? location.index : firstUnpinnedBefore),
+        );
+      }
       prompts.unshift(updated);
     } else {
+      const savedPosition = typeof prompt !== "string" && Number.isInteger(prompt.unpinnedPosition)
+        ? Math.max(0, prompt.unpinnedPosition!)
+        : 0;
+      if (typeof updated !== "string") delete updated.unpinnedPosition;
       const firstUnpinnedIndex = prompts.findIndex((item) => !isPromptPinned(item));
-      prompts.splice(firstUnpinnedIndex < 0 ? prompts.length : firstUnpinnedIndex, 0, updated);
+      const groupStart = firstUnpinnedIndex < 0 ? prompts.length : firstUnpinnedIndex;
+      const unpinnedCount = prompts.length - groupStart;
+      prompts.splice(groupStart + Math.min(savedPosition, unpinnedCount), 0, updated);
     }
     await persist(next, wasPinned ? "已取消 Pin" : "已 Pin 到分类顶部");
   };
@@ -906,7 +919,7 @@ function App() {
       const firstUnpinnedIndex = target.findIndex((prompt) => !isPromptPinned(prompt));
       target.splice(firstUnpinnedIndex < 0 ? target.length : firstUnpinnedIndex, 0, moved);
     } else {
-      target.push(moved);
+      insertPromptByCreatedAt(target, moved);
     }
     if (await persist(next, `已移动到「${targetType} / ${targetCategory}」`)) setMoveLocation(null);
   };
@@ -1410,9 +1423,8 @@ function App() {
                   )}
                   <button className="copy-button" onClick={() => copyPrompt(location.prompt)}><Copy size={17} /><span>复制</span></button>
                   <div className="prompt-content">
-                    {(global || pinned) && <div className="prompt-content-flags">
-                      {global && <div className="source-pill">{location.typeName}<ChevronRight size={11} />{location.categoryName}</div>}
-                      {pinned && <div className="pin-pill"><Pin size={10} />PIN</div>}
+                    {global && <div className="prompt-content-flags">
+                      <div className="source-pill">{location.typeName}<ChevronRight size={11} />{location.categoryName}</div>
                     </div>}
                     {title && <h3>{title}</h3>}
                     <p>{content || <span className="muted-copy">（无正文）</span>}</p>

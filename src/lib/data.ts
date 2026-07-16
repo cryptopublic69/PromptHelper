@@ -136,6 +136,33 @@ export function isPromptPinned(prompt: PromptItem): boolean {
   return typeof prompt !== "string" && prompt.pinned === true;
 }
 
+function promptCreatedAtTime(prompt: PromptItem): number | null {
+  if (typeof prompt === "string" || !prompt.createdAt) return null;
+  const time = Date.parse(prompt.createdAt);
+  return Number.isFinite(time) ? time : null;
+}
+
+export function insertPromptByCreatedAt(prompts: PromptItem[], prompt: PromptItem): number {
+  const pinned = isPromptPinned(prompt);
+  const createdAt = promptCreatedAtTime(prompt);
+  const firstUnpinnedIndex = prompts.findIndex((item) => !isPromptPinned(item));
+  const groupStart = pinned ? 0 : firstUnpinnedIndex < 0 ? prompts.length : firstUnpinnedIndex;
+  const groupEnd = pinned ? firstUnpinnedIndex < 0 ? prompts.length : firstUnpinnedIndex : prompts.length;
+
+  let insertAt = groupEnd;
+  if (createdAt !== null) {
+    for (let index = groupStart; index < groupEnd; index += 1) {
+      const existingTime = promptCreatedAtTime(prompts[index]);
+      if (existingTime === null || existingTime < createdAt) {
+        insertAt = index;
+        break;
+      }
+    }
+  }
+  prompts.splice(insertAt, 0, prompt);
+  return insertAt;
+}
+
 export function withPromptPinned(prompt: PromptItem, pinned: boolean): PromptItem {
   if (typeof prompt === "string") {
     const next = createPromptRecord("", prompt);
@@ -205,7 +232,7 @@ export function mergePromptData(
       }
       for (const prompt of prompts) {
         if (!target[categoryName].some((existing) => samePrompt(existing, prompt))) {
-          target[categoryName].push(prompt);
+          insertPromptByCreatedAt(target[categoryName], prompt);
           stats.prompts += 1;
         }
       }

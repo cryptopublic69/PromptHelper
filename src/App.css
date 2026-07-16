@@ -253,9 +253,8 @@ html.type-pointer-dragging, html.type-pointer-dragging * { cursor: grabbing !imp
 .prompt-content p { margin: 0; color: #aeb9c8; font-size: .6875rem; line-height: 1.5; white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .muted-copy { color: var(--subtle); }
 .prompt-content-flags { display: flex; align-items: center; gap: 5px; margin: 0 0 5px; }
-.source-pill, .pin-pill { width: fit-content; display: flex; align-items: center; gap: 2px; padding: 2px 6px; border-radius: 5px; font-size: .5rem; }
+.source-pill { width: fit-content; display: flex; align-items: center; gap: 2px; padding: 2px 6px; border-radius: 5px; font-size: .5rem; }
 .source-pill { color: #aab4ff; background: var(--accent-soft); }
-.pin-pill { color: #c4caff; border: 1px solid rgba(124,140,255,.2); background: rgba(124,140,255,.12); font-weight: 700; letter-spacing: .05em; }
 .prompt-actions { position: relative; width: 60px; height: 31px; flex: none; }
 .prompt-default-actions { position: absolute; right: 0; top: 0; display: flex; gap: 2px; opacity: 1; pointer-events: auto; transform: scale(1); transform-origin: right center; transition: opacity .12s, transform .12s; }
 .prompt-default-actions.open { opacity: 0; pointer-events: none; transform: scale(.94); }
