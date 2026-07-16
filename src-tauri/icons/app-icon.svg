@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="96" x2="904" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#788BFF"/>
+      <stop offset="0.52" stop-color="#8B78EC"/>
+      <stop offset="1" stop-color="#43C9A2"/>
+    </linearGradient>
+    <linearGradient id="sheet" x1="350" y1="284" x2="690" y2="752" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.98"/>
+      <stop offset="1" stop-color="#EAF0FF" stop-opacity="0.9"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="30" stdDeviation="38" flood-color="#1D164C" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect x="62" y="62" width="900" height="900" rx="232" fill="#0E1622"/>
+  <rect x="90" y="90" width="844" height="844" rx="208" fill="url(#bg)"/>
+  <circle cx="224" cy="210" r="132" fill="#FFFFFF" fill-opacity="0.07"/>
+  <circle cx="842" cy="830" r="190" fill="#0B8C7B" fill-opacity="0.16"/>
+  <g filter="url(#shadow)">
+    <path d="M330 290c0-35.3 28.7-64 64-64h236l126 128v380c0 35.3-28.7 64-64 64H394c-35.3 0-64-28.7-64-64V290Z" fill="url(#sheet)"/>
+    <path d="M630 226v92c0 28.7 23.3 52 52 52h74L630 226Z" fill="#C9D2FF"/>
+    <rect x="418" y="450" width="250" height="35" rx="17.5" fill="#6677E8"/>
+    <rect x="418" y="531" width="202" height="27" rx="13.5" fill="#A5AEE3"/>
+    <rect x="418" y="590" width="274" height="27" rx="13.5" fill="#A5AEE3"/>
+    <rect x="418" y="649" width="168" height="27" rx="13.5" fill="#A5AEE3"/>
+  </g>
+  <path d="m268 314 18.6 53.4L340 386l-53.4 18.6L268 458l-18.6-53.4L196 386l53.4-18.6L268 314Z" fill="#FFFFFF"/>
+  <path d="m784 482 13.4 38.6L836 534l-38.6 13.4L784 586l-13.4-38.6L732 534l38.6-13.4L784 482Z" fill="#D8FFF4"/>
+  <circle cx="258" cy="556" r="17" fill="#D8FFF4"/>
+</svg>
