@@ -1,13 +1,12 @@
 import {
-  ArrowDown,
   ArrowRight,
-  ArrowUp,
   Check,
   ChevronRight,
   ChevronsUp,
   Copy,
   Download,
   Ellipsis,
+  Eye,
   FileText,
   Folder,
   FolderInput,
@@ -207,7 +206,6 @@ function UnlockScreen({
         <div className="unlock-mark"><LockKeyhole size={28} /></div>
         <div className="eyebrow">PROMPTHELPER · SECURE LIBRARY</div>
         <h1>欢迎回来</h1>
-        <p className="unlock-copy">提示词资料库已加密。输入原 V4 密码即可继续，无需迁移数据。</p>
         <form onSubmit={submit}>
           <label className="field-label" htmlFor="unlock-password">资料库密码</label>
           <div className="input-shell prominent">
@@ -245,17 +243,21 @@ function App() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [entityDialog, setEntityDialog] = useState<EntityDialog | null>(null);
   const [promptDialog, setPromptDialog] = useState<PromptDialog | null>(null);
+  const [promptViewer, setPromptViewer] = useState<PromptLocation | null>(null);
   const [moveLocation, setMoveLocation] = useState<PromptLocation | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [importDraft, setImportDraft] = useState<PromptData | null>(null);
   const [securityMode, setSecurityMode] = useState<"manage" | "enable" | "change" | "disable" | null>(null);
   const [contextMenu, setContextMenu] = useState<({ x: number; y: number } & PromptLocation) | null>(null);
   const [treeActionMenuKey, setTreeActionMenuKey] = useState<string | null>(null);
+  const [promptActionMenuKey, setPromptActionMenuKey] = useState<string | null>(null);
   const [dragTabId, setDragTabId] = useState<string | null>(null);
   const [dragTypeName, setDragTypeName] = useState<string | null>(null);
   const [typeDropTarget, setTypeDropTarget] = useState<{ typeName: string; position: "before" | "after" } | null>(null);
   const [dragCategory, setDragCategory] = useState<{ typeName: string; categoryName: string } | null>(null);
   const [categoryDropTarget, setCategoryDropTarget] = useState<{ typeName: string; categoryName: string; position: "before" | "after" } | null>(null);
+  const [dragPromptIndex, setDragPromptIndex] = useState<number | null>(null);
+  const [promptDropTarget, setPromptDropTarget] = useState<{ index: number; position: "before" | "after" } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const tabsScrollRef = useRef<HTMLDivElement>(null);
   const tabsScrollTargetRef = useRef(0);
@@ -270,6 +272,15 @@ function App() {
   const categoryPointerDragRef = useRef<{
     typeName: string;
     sourceCategoryName: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    active: boolean;
+  } | null>(null);
+  const promptPointerDragRef = useRef<{
+    typeName: string;
+    categoryName: string;
+    sourceIndex: number;
     pointerId: number;
     startX: number;
     startY: number;
@@ -350,6 +361,7 @@ function App() {
     const closeMenu = () => {
       setContextMenu(null);
       setTreeActionMenuKey(null);
+      setPromptActionMenuKey(null);
     };
     window.addEventListener("click", closeMenu);
     return () => window.removeEventListener("click", closeMenu);
@@ -515,7 +527,7 @@ function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (phase !== "ready" || entityDialog || promptDialog || confirmation || moveLocation || importDraft || securityMode) return;
+      if (phase !== "ready" || entityDialog || promptDialog || promptViewer || confirmation || moveLocation || importDraft || securityMode) return;
       if (event.ctrlKey && event.key.toLowerCase() === "t") {
         event.preventDefault(); addTab();
       } else if (event.ctrlKey && event.key.toLowerCase() === "w") {
@@ -734,16 +746,59 @@ function App() {
 
   const mutatePrompt = async (
     location: PromptLocation,
-    mode: "top" | "up" | "down" | "delete",
+    mode: "top" | "delete",
   ) => {
     const next = cloneData(data);
     const prompts = getCategories(next, location.typeName)[location.categoryName];
     if (!prompts || !prompts[location.index]) return;
     if (mode === "delete") prompts.splice(location.index, 1);
     if (mode === "top" && location.index > 0) prompts.unshift(...prompts.splice(location.index, 1));
-    if (mode === "up" && location.index > 0) [prompts[location.index - 1], prompts[location.index]] = [prompts[location.index], prompts[location.index - 1]];
-    if (mode === "down" && location.index < prompts.length - 1) [prompts[location.index + 1], prompts[location.index]] = [prompts[location.index], prompts[location.index + 1]];
     await persist(next, mode === "delete" ? "提示词已删除" : "提示词顺序已更新");
+  };
+
+  const resolvePromptDropTarget = (
+    sourceIndex: number,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const card = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>(".prompt-card[data-prompt-index]");
+    const targetIndex = Number(card?.dataset.promptIndex);
+    if (!card || !Number.isInteger(targetIndex) || targetIndex === sourceIndex) return null;
+
+    const bounds = card.getBoundingClientRect();
+    return {
+      index: targetIndex,
+      position: clientY < bounds.top + bounds.height / 2 ? "before" as const : "after" as const,
+    };
+  };
+
+  const clearPromptPointerDrag = () => {
+    promptPointerDragRef.current = null;
+    document.documentElement.classList.remove("type-pointer-dragging");
+    setDragPromptIndex(null);
+    setPromptDropTarget(null);
+  };
+
+  const moveDraggedPrompt = async (
+    typeName: string,
+    categoryName: string,
+    sourceIndex: number,
+    targetIndex: number,
+    position: "before" | "after",
+  ) => {
+    if (sourceIndex === targetIndex) return;
+
+    const next = cloneData(data);
+    const prompts = getCategories(next, typeName)[categoryName];
+    if (!prompts || !prompts[sourceIndex] || !prompts[targetIndex]) return;
+
+    const [moved] = prompts.splice(sourceIndex, 1);
+    let insertAt = targetIndex - (sourceIndex < targetIndex ? 1 : 0);
+    if (position === "after") insertAt += 1;
+    prompts.splice(insertAt, 0, moved);
+    await persist(next, "提示词顺序已更新");
   };
 
   const requestDeletePrompt = (location: PromptLocation) => setConfirmation({
@@ -928,6 +983,9 @@ function App() {
                   onMouseEnter={() => setTreeActionMenuKey((current) => (
                     current && current !== typeActionsKey ? null : current
                   ))}
+                  onMouseLeave={() => setTreeActionMenuKey((current) => (
+                    current === typeActionsKey ? null : current
+                  ))}
                 >
                   <button
                     className="tree-drag-handle"
@@ -1026,6 +1084,9 @@ function App() {
                       data-category-name={categoryName}
                       onMouseEnter={() => setTreeActionMenuKey((current) => (
                         current && current !== categoryActionsKey ? null : current
+                      ))}
+                      onMouseLeave={() => setTreeActionMenuKey((current) => (
+                        current === categoryActionsKey ? null : current
                       ))}
                     >
                       <button
@@ -1153,13 +1214,103 @@ function App() {
               {visiblePrompts.map((location, displayIndex) => {
                 const title = promptTitle(location.prompt);
                 const content = promptContent(location.prompt);
-                const global = Boolean(activeTab.search);
+                const global = Boolean(activeTab.search.trim());
+                const sortable = !global && !busy && categoryPrompts.length > 1;
+                const promptActionsKey = `prompt:${location.typeName}\u0000${location.categoryName}\u0000${location.index}`;
+                const promptActionsOpen = promptActionMenuKey === promptActionsKey;
+                const dragging = !global && dragPromptIndex === location.index;
+                const dropPosition = !global && promptDropTarget?.index === location.index
+                  ? promptDropTarget.position
+                  : null;
                 return <article
-                  className="prompt-card"
+                  className={`prompt-card ${sortable ? "sortable" : ""} ${dragging ? "dragging" : ""} ${dropPosition ? `drop-${dropPosition}` : ""}`}
                   key={`${location.typeName}-${location.categoryName}-${location.index}-${content.slice(0, 24)}`}
+                  data-prompt-index={location.index}
                   onContextMenu={(event) => { event.preventDefault(); setContextMenu({ ...location, x: event.clientX, y: event.clientY }); }}
+                  onMouseEnter={() => setPromptActionMenuKey((current) => (
+                    current && current !== promptActionsKey ? null : current
+                  ))}
+                  onMouseLeave={() => setPromptActionMenuKey((current) => (
+                    current === promptActionsKey ? null : current
+                  ))}
                 >
-                  <div className="prompt-number">{String(displayIndex + 1).padStart(2, "0")}</div>
+                  {global ? (
+                    <div className="prompt-number">{String(displayIndex + 1).padStart(2, "0")}</div>
+                  ) : (
+                    <div
+                      className="prompt-drag-handle"
+                      onPointerDown={(event) => {
+                        if (!sortable || !event.isPrimary || event.button !== 0) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        promptPointerDragRef.current = {
+                          typeName: location.typeName,
+                          categoryName: location.categoryName,
+                          sourceIndex: location.index,
+                          pointerId: event.pointerId,
+                          startX: event.clientX,
+                          startY: event.clientY,
+                          active: false,
+                        };
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                        document.documentElement.classList.add("type-pointer-dragging");
+                        setPromptDropTarget(null);
+                      }}
+                      onPointerMove={(event) => {
+                        const drag = promptPointerDragRef.current;
+                        if (!drag || drag.pointerId !== event.pointerId) return;
+                        if (!drag.active) {
+                          if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return;
+                          drag.active = true;
+                          setDragPromptIndex(drag.sourceIndex);
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const target = resolvePromptDropTarget(drag.sourceIndex, event.clientX, event.clientY);
+                        setPromptDropTarget((current) => (
+                          current?.index === target?.index && current?.position === target?.position
+                            ? current
+                            : target
+                        ));
+                      }}
+                      onPointerUp={(event) => {
+                        const drag = promptPointerDragRef.current;
+                        if (!drag || drag.pointerId !== event.pointerId) return;
+                        const target = drag.active
+                          ? resolvePromptDropTarget(drag.sourceIndex, event.clientX, event.clientY)
+                          : null;
+                        if (drag.active) {
+                          event.preventDefault();
+                          event.stopPropagation();
+                        }
+                        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                          event.currentTarget.releasePointerCapture(event.pointerId);
+                        }
+                        clearPromptPointerDrag();
+                        if (target) {
+                          void moveDraggedPrompt(
+                            drag.typeName,
+                            drag.categoryName,
+                            drag.sourceIndex,
+                            target.index,
+                            target.position,
+                          );
+                        }
+                      }}
+                      onPointerCancel={(event) => {
+                        if (promptPointerDragRef.current?.pointerId !== event.pointerId) return;
+                        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                          event.currentTarget.releasePointerCapture(event.pointerId);
+                        }
+                        clearPromptPointerDrag();
+                      }}
+                      title="拖动排序"
+                      aria-label={`拖动第 ${displayIndex + 1} 条提示词排序`}
+                    >
+                      <GripVertical size={14} />
+                      <span>{String(displayIndex + 1).padStart(2, "0")}</span>
+                    </div>
+                  )}
                   <button className="copy-button" onClick={() => copyPrompt(location.prompt)}><Copy size={17} /><span>复制</span></button>
                   <div className="prompt-content">
                     {global && <div className="source-pill">{location.typeName}<ChevronRight size={11} />{location.categoryName}</div>}
@@ -1167,12 +1318,25 @@ function App() {
                     <p>{content || <span className="muted-copy">（无正文）</span>}</p>
                   </div>
                   <div className="prompt-actions">
-                    <button onClick={() => setPromptDialog({ mode: "edit", location })} title="编辑"><Pencil size={16} /></button>
-                    <button onClick={() => mutatePrompt(location, "top")} disabled={location.index === 0} title="置顶"><ChevronsUp size={16} /></button>
-                    <button onClick={() => mutatePrompt(location, "up")} disabled={location.index === 0} title="上移"><ArrowUp size={16} /></button>
-                    <button onClick={() => mutatePrompt(location, "down")} disabled={location.index >= getCategories(data, location.typeName)[location.categoryName].length - 1} title="下移"><ArrowDown size={16} /></button>
-                    <button onClick={() => setMoveLocation(location)} title="移动到"><FolderInput size={16} /></button>
-                    <button className="danger" onClick={() => requestDeletePrompt(location)} title="删除"><Trash2 size={16} /></button>
+                    <div className={`prompt-default-actions ${promptActionsOpen ? "open" : ""}`}>
+                      <button onClick={() => setPromptViewer(location)} title="查看完整内容" aria-label="查看完整内容"><Eye size={16} /></button>
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setPromptActionMenuKey((current) => current === promptActionsKey ? null : promptActionsKey);
+                        }}
+                        title="更多操作"
+                        aria-label="打开更多操作"
+                        aria-expanded={promptActionsOpen}
+                      ><Ellipsis size={17} /></button>
+                    </div>
+                    <div className={`prompt-row-actions ${promptActionsOpen ? "open" : ""}`}>
+                      <button onClick={() => { setPromptViewer(location); setPromptActionMenuKey(null); }} title="查看完整内容"><Eye size={16} /></button>
+                      <button onClick={() => { setPromptDialog({ mode: "edit", location }); setPromptActionMenuKey(null); }} title="编辑"><Pencil size={16} /></button>
+                      <button onClick={() => { void mutatePrompt(location, "top"); setPromptActionMenuKey(null); }} disabled={location.index === 0} title="置顶"><ChevronsUp size={16} /></button>
+                      <button onClick={() => { setMoveLocation(location); setPromptActionMenuKey(null); }} title="移动到"><FolderInput size={16} /></button>
+                      <button className="danger" onClick={() => { requestDeletePrompt(location); setPromptActionMenuKey(null); }} title="删除"><Trash2 size={16} /></button>
+                    </div>
                   </div>
                 </article>;
               })}
@@ -1210,6 +1374,7 @@ function App() {
 
       {entityDialog && <EntityModal dialog={entityDialog} onClose={() => setEntityDialog(null)} onSave={saveEntity} />}
       {promptDialog && <PromptEditor dialog={promptDialog} onClose={() => setPromptDialog(null)} onSave={savePrompt} />}
+      {promptViewer && <PromptViewer location={promptViewer} onClose={() => setPromptViewer(null)} onCopy={() => { void copyPrompt(promptViewer.prompt); }} />}
       {confirmation && <ConfirmModal confirmation={confirmation} onClose={() => setConfirmation(null)} />}
       {moveLocation && <MoveModal data={data} source={moveLocation} onClose={() => setMoveLocation(null)} onMove={movePrompt} />}
       {importDraft && <ImportModal onClose={() => setImportDraft(null)} onApply={applyImport} />}
@@ -1237,7 +1402,7 @@ function EntityModal({ dialog, onClose, onSave }: { dialog: EntityDialog; onClos
 }
 
 function PromptEditor({ dialog, onClose, onSave }: { dialog: PromptDialog; onClose: () => void; onSave: (title: string, content: string) => void }) {
-  const source = dialog.location?.prompt;
+  const source = dialog.mode === "edit" ? dialog.location?.prompt : undefined;
   const [title, setTitle] = useState(source ? promptTitle(source) : "");
   const [content, setContent] = useState(source ? promptContent(source) : "");
   return <Modal wide title={dialog.mode === "add" ? "添加提示词" : "编辑提示词"} subtitle="标题可选；复制时只会复制正文内容" onClose={onClose} icon={<FileText size={19} />}>
@@ -1260,6 +1425,16 @@ function PromptEditor({ dialog, onClose, onSave }: { dialog: PromptDialog; onClo
       <div className="editor-meta"><span>{content.length} 字符</span><span>Ctrl + Enter 保存</span></div>
       <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!title.trim() && !content.trim()}><Check size={16} />保存</button></div>
     </form>
+  </Modal>;
+}
+
+function PromptViewer({ location, onClose, onCopy }: { location: PromptLocation; onClose: () => void; onCopy: () => void }) {
+  const title = promptTitle(location.prompt);
+  const content = promptContent(location.prompt);
+  return <Modal wide title={title || "提示词详情"} subtitle={`${location.typeName} / ${location.categoryName}`} onClose={onClose} icon={<Eye size={19} />}>
+    <div className="prompt-viewer-content">{content || <span>（无正文）</span>}</div>
+    <div className="editor-meta"><span>{content.length} 字符</span><span>完整内容</span></div>
+    <div className="modal-actions"><button className="secondary-button" onClick={onClose}>关闭</button><button className="primary-button" onClick={onCopy}><Copy size={16} />复制内容</button></div>
   </Modal>;
 }
 
