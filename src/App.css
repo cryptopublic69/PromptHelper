@@ -105,7 +105,14 @@ button:disabled { opacity: 0.38; cursor: not-allowed !important; }
 .input-shell input::placeholder { color: #526176; }
 .form-error { color: #ff9aab; font-size: .75rem; margin-top: 9px; line-height: 1.5; }
 .unlock-button { width: 100%; margin-top: 18px; justify-content: center; height: 48px; }
-.data-path { margin-top: 24px; color: #526176; font-size: .625rem; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.data-location-section { margin-top: 24px; }
+.data-location-section + form { margin-top: 22px; }
+.data-location-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.data-location-path { min-width: 0; height: 42px; display: flex; align-items: center; gap: 9px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(8,13,21,.48); color: var(--muted); }
+.data-location-path svg { flex: none; color: #8998ff; }
+.data-location-path span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .6875rem; }
+.data-location-button { min-height: 42px; padding: 0 12px; }
+.data-location-hint { margin-top: 7px; color: var(--subtle); font-size: .5625rem; line-height: 1.45; }
 
 .app-shell { display: grid; grid-template-columns: 250px minmax(0, 1fr); grid-template-rows: 45px minmax(0, 1fr); width: 100%; height: 100%; background: var(--bg); }
 .top-bar { grid-column: 1 / -1; grid-row: 1; min-width: 0; height: 45px; display: flex; align-items: flex-end; gap: 5px; padding: 0; background: #0d141e; border-bottom: 1px solid var(--line); }
@@ -192,14 +199,20 @@ html.type-pointer-dragging, html.type-pointer-dragging * { cursor: grabbing !imp
 .tabs-zone { flex: 1; min-width: 0; height: 44px; display: flex; align-items: flex-end; overflow: hidden; }
 .tabs-scroll { flex: 0 1 auto; min-width: 0; display: flex; align-items: flex-end; gap: 4px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain; }
 .tabs-scroll::-webkit-scrollbar { display: none; }
-.workspace-tab { flex: none; max-width: 175px; height: 37px; display: flex; align-items: center; gap: 7px; border: 1px solid transparent; border-bottom: 0; border-radius: 10px 10px 0 0; background: transparent; color: var(--subtle); padding: 0 9px 0 12px; cursor: pointer; font-size: .6875rem; }
-.workspace-tab span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.workspace-tab i { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border-radius: 6px; font-style: normal; opacity: 0; }
-.workspace-tab:hover { color: var(--muted); background: rgba(255,255,255,.025); }
-.workspace-tab:hover i, .workspace-tab.active i { opacity: 1; }
-.workspace-tab i:hover { color: var(--text); background: rgba(255,255,255,.08); }
-.workspace-tab.active { color: var(--text); background: var(--bg); border-color: var(--line); position: relative; }
+.workspace-tab { position: relative; flex: none; width: min(131px, 18vw); height: 37px; display: flex; align-items: center; border: 1px solid transparent; border-bottom: 0; border-radius: 10px 10px 0 0; background: transparent; color: var(--subtle); padding: 0 4px 0 0; cursor: default; font-size: .6875rem; user-select: none; }
+.workspace-tab-main { min-width: 0; height: 100%; flex: 1 1 auto; display: flex; align-items: center; padding: 0 5px 0 12px; border: 0; background: transparent; color: inherit; cursor: inherit; }
+.workspace-tab-main:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
+.workspace-tab-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.workspace-tab-close { width: 20px; height: 20px; flex: none; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; opacity: 0; }
+.workspace-tab:hover { color: var(--muted); background: rgba(255,255,255,.035); }
+.workspace-tab.dragging { opacity: .56; transform: translateY(1px) scale(.985); cursor: grabbing; }
+.workspace-tab.drop-before { box-shadow: inset 3px 0 0 var(--accent); }
+.workspace-tab.drop-after { box-shadow: inset -3px 0 0 var(--accent); }
+.workspace-tab:hover .workspace-tab-close, .workspace-tab.active .workspace-tab-close { opacity: 1; }
+.workspace-tab-close:hover { color: var(--text); background: rgba(255,255,255,.08); }
+.workspace-tab.active { color: var(--text); background: var(--bg); border-color: var(--line); }
 .workspace-tab.active::after { content: ""; position: absolute; left: 10px; right: 10px; top: -1px; height: 2px; border-radius: 0 0 2px 2px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+html.tab-pointer-dragging, html.tab-pointer-dragging * { cursor: grabbing !important; }
 .new-tab, .library-actions button { border: 0; background: transparent; color: var(--subtle); display: grid; place-items: center; cursor: pointer; border-radius: 7px; }
 .new-tab { width: 29px; height: 29px; margin: 0 0 4px; flex: none; }
 .new-tab:hover, .library-actions button:hover { background: var(--surface); color: var(--text); }
@@ -396,7 +409,7 @@ html[data-theme="light"] .text-area,
 html[data-theme="light"] .prompt-viewer-content { background: rgba(255,255,255,.82); }
 html[data-theme="light"] .input-shell input::placeholder,
 html[data-theme="light"] .search-box input::placeholder { color: #98a3b2; }
-html[data-theme="light"] .data-path { color: #8c98a8; }
+html[data-theme="light"] .data-location-path { background: rgba(255,255,255,.82); }
 html[data-theme="light"] .top-bar { background: #ffffff; }
 html[data-theme="light"] .window-controls button { color: #718096; }
 html[data-theme="light"] .window-controls button:hover { background: rgba(29,42,60,.07); }
@@ -415,7 +428,7 @@ html[data-theme="light"] .tree-actions-trigger:hover { background: #e6eaf2; }
 html[data-theme="light"] .sidebar-footer small { color: #8793a4; }
 html[data-theme="light"] .workspace { background: radial-gradient(circle at 80% 0, rgba(102,118,232,.08), transparent 33%), var(--bg); }
 html[data-theme="light"] .workspace-tab:hover { background: rgba(38,50,70,.04); }
-html[data-theme="light"] .workspace-tab i:hover { background: rgba(38,50,70,.08); }
+html[data-theme="light"] .workspace-tab-close:hover { background: rgba(38,50,70,.08); }
 html[data-theme="light"] .workspace-header { background: rgba(255,255,255,.72); }
 html[data-theme="light"] .search-box { background: #ffffff; }
 html[data-theme="light"] .search-box:focus-within { background: #ffffff; }

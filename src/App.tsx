@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import {
   type FormEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -69,10 +70,9 @@ import type {
   PromptItem,
   PromptLocation,
   WorkspaceTab,
+  WorkspaceState,
 } from "./types";
 
-const TAB_STORAGE_KEY = "prompt-helper-v5-tabs";
-const ACTIVE_TAB_STORAGE_KEY = "prompt-helper-v5-active-tab";
 const FONT_SIZE_STORAGE_KEY = "prompt-helper-v5-font-size";
 const THEME_STORAGE_KEY = "prompt-helper-v5-theme";
 const appWindow = getCurrentWindow();
@@ -83,6 +83,36 @@ const makeId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const createBlankTab = (): WorkspaceTab => ({
+  id: makeId(),
+  typeName: "",
+  categoryName: "",
+  search: "",
+  expandedTypeName: "",
+});
+
+type TabDropPosition = "before" | "after";
+
+const TAB_REORDER_THRESHOLD_PX = 6;
+
+const reorderTabs = (
+  tabs: WorkspaceTab[],
+  sourceTabId: string,
+  targetTabId: string,
+  position: TabDropPosition,
+): WorkspaceTab[] => {
+  const sourceIndex = tabs.findIndex((tab) => tab.id === sourceTabId);
+  const targetIndex = tabs.findIndex((tab) => tab.id === targetTabId);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return tabs;
+
+  const next = [...tabs];
+  const [sourceTab] = next.splice(sourceIndex, 1);
+  const adjustedTargetIndex = next.findIndex((tab) => tab.id === targetTabId);
+  const insertIndex = position === "before" ? adjustedTargetIndex : adjustedTargetIndex + 1;
+  next.splice(insertIndex, 0, sourceTab);
+  return next;
+};
 
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -203,21 +233,31 @@ function Modal({
 function UnlockScreen({
   status,
   onUnlock,
+  onSelectDataDirectory,
   error,
 }: {
   status: AppStatus;
   onUnlock: (password: string) => Promise<void>;
+  onSelectDataDirectory: () => Promise<void>;
   error: string;
 }) {
   const [password, setPassword] = useState("");
   const [working, setWorking] = useState(false);
+  const [selectingDirectory, setSelectingDirectory] = useState(false);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!password) return;
+    if (status.encrypted && !password) return;
     setWorking(true);
     await onUnlock(password);
     setWorking(false);
+  };
+
+  const selectDataDirectory = async () => {
+    setSelectingDirectory(true);
+    await onSelectDataDirectory();
+    setPassword("");
+    setSelectingDirectory(false);
   };
 
   return (
@@ -228,26 +268,56 @@ function UnlockScreen({
       <section className="unlock-card">
         <div className="unlock-mark"><img src={appIconUrl} alt="" /></div>
         <div className="eyebrow">PROMPTHELPER · SECURE LIBRARY</div>
-        <h1>欢迎回来</h1>
-        <form onSubmit={submit}>
-          <label className="field-label" htmlFor="unlock-password">资料库密码</label>
-          <div className="input-shell prominent">
-            <KeyRound size={18} />
-            <input
-              id="unlock-password"
-              autoFocus
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="输入密码"
-            />
+        <h1>{status.encrypted ? "欢迎回来" : status.exists ? "打开资料库" : "开始使用"}</h1>
+        <div className="data-location-section">
+          <label className="field-label">资料库位置</label>
+          <div className="data-location-row">
+            <div className="data-location-path" title={status.dataPath}>
+              <Folder size={17} />
+              <span>{status.dataDirectory}</span>
+            </div>
+            <button
+              type="button"
+              className="secondary-button data-location-button"
+              onClick={() => void selectDataDirectory()}
+              disabled={working || selectingDirectory || !status.pathConfigurable}
+              title={status.pathConfigurable ? "选择资料库所在文件夹" : "当前路径由环境变量管理"}
+            >
+              <FolderInput size={16} />
+              {selectingDirectory ? "选择中…" : "选择"}
+            </button>
           </div>
+          <div className="data-location-hint">
+            {status.pathConfigurable && status.exists
+              ? "已找到 prompts_data.json；软件会记住此位置"
+              : status.pathConfigurable
+                ? "此位置尚无资料库；打开后将使用这里的 prompts_data.json"
+              : "当前位置由环境变量 PROMPT_HELPER_DATA_FILE 管理"}
+          </div>
+        </div>
+        <form onSubmit={submit}>
+          {status.encrypted && <>
+            <label className="field-label" htmlFor="unlock-password">资料库密码</label>
+            <div className="input-shell prominent">
+              <KeyRound size={18} />
+              <input
+                id="unlock-password"
+                autoFocus
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="输入密码"
+              />
+            </div>
+          </>}
           {error && <div className="form-error">{error}</div>}
-          <button className="primary-button unlock-button" disabled={working || !password}>
-            {working ? "正在解锁…" : "解锁资料库"}<ArrowRight size={17} />
+          <button className="primary-button unlock-button" disabled={working || (status.encrypted && !password)}>
+            {working
+              ? status.encrypted ? "正在解锁…" : "正在打开…"
+              : status.encrypted ? "解锁资料库" : status.exists ? "打开资料库" : "打开新资料库"}
+            <ArrowRight size={17} />
           </button>
         </form>
-        <div className="data-path" title={status.dataPath}>{status.dataPath}</div>
       </section>
     </main>
   );
@@ -278,6 +348,7 @@ function App() {
   const [treeActionMenuKey, setTreeActionMenuKey] = useState<string | null>(null);
   const [promptActionMenuKey, setPromptActionMenuKey] = useState<string | null>(null);
   const [dragTabId, setDragTabId] = useState<string | null>(null);
+  const [tabDropTarget, setTabDropTarget] = useState<{ tabId: string; position: TabDropPosition } | null>(null);
   const [dragTypeName, setDragTypeName] = useState<string | null>(null);
   const [typeDropTarget, setTypeDropTarget] = useState<{ typeName: string; position: "before" | "after" } | null>(null);
   const [dragCategory, setDragCategory] = useState<{ typeName: string; categoryName: string } | null>(null);
@@ -288,6 +359,18 @@ function App() {
   const tabsScrollRef = useRef<HTMLDivElement>(null);
   const tabsScrollTargetRef = useRef(0);
   const tabsScrollFrameRef = useRef<number | null>(null);
+  const tabsRef = useRef<WorkspaceTab[]>([]);
+  const activeTabIdRef = useRef("");
+  const workspaceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const allowWindowCloseRef = useRef(false);
+  const tabPointerDragRef = useRef<{
+    sourceTabId: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    active: boolean;
+  } | null>(null);
+  const suppressTabClickRef = useRef(false);
   const typePointerDragRef = useRef<{
     sourceTypeName: string;
     pointerId: number;
@@ -314,17 +397,28 @@ function App() {
     active: boolean;
   } | null>(null);
 
-  const initialiseTabs = (loaded: PromptData) => {
+  tabsRef.current = tabs;
+  activeTabIdRef.current = activeTabId;
+
+  const initialiseTabs = async (loaded: PromptData) => {
     const types = getTypes(loaded);
     const fallbackType = types[0] || "";
     const fallbackCategory = getCategoryNames(loaded, fallbackType)[0] || "";
     let restored: WorkspaceTab[] = [];
+    let restoredActive: string | null = null;
+
     try {
-      const parsed = JSON.parse(localStorage.getItem(TAB_STORAGE_KEY) || "[]");
-      if (Array.isArray(parsed)) restored = parsed;
-    } catch {
-      restored = [];
+      const workspaceState = await api.loadWorkspaceState();
+      if (workspaceState && Array.isArray(workspaceState.tabs)) {
+        restored = workspaceState.tabs;
+        restoredActive = typeof workspaceState.activeTabId === "string"
+          ? workspaceState.activeTabId
+          : null;
+      }
+    } catch (error) {
+      console.warn("无法读取持久化工作区状态", error);
     }
+
     const normalised = restored.slice(0, 20).map((tab) => {
       const requestedType = typeof tab.typeName === "string" ? tab.typeName : "";
       const typeName = requestedType
@@ -347,7 +441,6 @@ function App() {
     const nextTabs = normalised.length
       ? normalised
       : [{ id: makeId(), typeName: fallbackType, categoryName: fallbackCategory, search: "", expandedTypeName: fallbackType }];
-    const restoredActive = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
     setTabs(nextTabs);
     setActiveTabId(nextTabs.some((tab) => tab.id === restoredActive) ? restoredActive! : nextTabs[0].id);
   };
@@ -357,14 +450,7 @@ function App() {
       try {
         const appStatus = await api.status();
         setStatus(appStatus);
-        if (appStatus.encrypted) {
-          setPhase("locked");
-        } else {
-          const loaded = await api.load();
-          setData(loaded);
-          initialiseTabs(loaded);
-          setPhase("ready");
-        }
+        setPhase("locked");
       } catch (error) {
         setFatalError(errorMessage(error));
         setPhase("error");
@@ -374,9 +460,45 @@ function App() {
 
   useEffect(() => {
     if (phase !== "ready" || !tabs.length) return;
-    localStorage.setItem(TAB_STORAGE_KEY, JSON.stringify(tabs));
-    localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTabId);
+
+    const workspaceState: WorkspaceState = { tabs, activeTabId };
+    workspaceSaveQueueRef.current = workspaceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => api.saveWorkspaceState(workspaceState))
+      .catch((error) => {
+        console.error("保存工作区状态失败", error);
+      });
   }, [tabs, activeTabId, phase]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    void appWindow.onCloseRequested(async (event) => {
+      if (allowWindowCloseRef.current) return;
+      event.preventDefault();
+
+      try {
+        const latestTabs = tabsRef.current;
+        const latestActiveTabId = activeTabIdRef.current;
+        if (latestTabs.length) {
+          await workspaceSaveQueueRef.current;
+          await api.saveWorkspaceState({
+            tabs: latestTabs,
+            activeTabId: latestActiveTabId,
+          });
+        }
+      } catch (error) {
+        console.error("关闭前保存工作区状态失败", error);
+      } finally {
+        allowWindowCloseRef.current = true;
+        await appWindow.destroy();
+      }
+    }).then((stopListening) => {
+      unlisten = stopListening;
+    });
+
+    return () => unlisten?.();
+  }, []);
 
   useEffect(() => {
     document.documentElement.style.fontSize = `${fontSize}px`;
@@ -488,10 +610,30 @@ function App() {
     try {
       setUnlockError("");
       const loaded = await api.load(value);
-      setPassword(value);
+      setPassword(value || null);
       setData(loaded);
-      initialiseTabs(loaded);
+      await initialiseTabs(loaded);
       setPhase("ready");
+    } catch (error) {
+      setUnlockError(errorMessage(error));
+    }
+  };
+
+  const selectDataDirectory = async () => {
+    try {
+      setUnlockError("");
+      const selected = await open({
+        multiple: false,
+        directory: true,
+        defaultPath: status?.dataDirectory,
+        title: "选择 PromptHelper 资料库文件夹",
+      });
+      if (typeof selected !== "string") return;
+
+      const nextStatus = await api.setDataDirectory(selected);
+      setStatus(nextStatus);
+      setPassword(null);
+      setPhase("locked");
     } catch (error) {
       setUnlockError(errorMessage(error));
     }
@@ -536,39 +678,141 @@ function App() {
   };
 
   const addTab = () => {
-    const tab: WorkspaceTab = {
-      id: makeId(),
-      typeName: "",
-      categoryName: "",
-      search: "",
-      expandedTypeName: "",
-    };
+    const tab = createBlankTab();
     setTabs((current) => [...current, tab]);
     setActiveTabId(tab.id);
   };
 
   const closeTab = (id: string) => {
+    const index = tabs.findIndex((tab) => tab.id === id);
+    if (index < 0) return;
+
     if (tabs.length === 1) {
-      setToast({ kind: "info", message: "至少保留一个工作标签" });
+      const blankTab = createBlankTab();
+      setTabs([blankTab]);
+      setActiveTabId(blankTab.id);
       return;
     }
-    const index = tabs.findIndex((tab) => tab.id === id);
+
     const next = tabs.filter((tab) => tab.id !== id);
     setTabs(next);
     if (id === activeTabId) setActiveTabId(next[Math.min(index, next.length - 1)].id);
   };
 
-  const moveDraggedTab = (targetId: string) => {
-    if (!dragTabId || dragTabId === targetId) return;
-    setTabs((current) => {
-      const from = current.findIndex((tab) => tab.id === dragTabId);
-      const to = current.findIndex((tab) => tab.id === targetId);
-      const next = [...current];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
-  };
+  const clearTabPointerDrag = useCallback(() => {
+    tabPointerDragRef.current = null;
+    document.documentElement.classList.remove("tab-pointer-dragging");
+    setDragTabId(null);
+    setTabDropTarget(null);
+  }, []);
+
+  const resolveTabDropTarget = useCallback((
+    sourceTabId: string,
+    clientX: number,
+    clientY: number,
+  ): { tabId: string; position: TabDropPosition } | null => {
+    const targetElement = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>(".workspace-tab[data-workspace-tab-id]");
+    const targetTabId = targetElement?.dataset.workspaceTabId;
+    if (!targetElement || !targetTabId || targetTabId === sourceTabId) return null;
+
+    const bounds = targetElement.getBoundingClientRect();
+    return {
+      tabId: targetTabId,
+      position: clientX < bounds.left + bounds.width / 2 ? "before" : "after",
+    };
+  }, []);
+
+  const maybeAutoScrollTabs = useCallback((clientX: number) => {
+    const strip = tabsScrollRef.current;
+    if (!strip || strip.scrollWidth <= strip.clientWidth) return;
+    const bounds = strip.getBoundingClientRect();
+    const edgeSize = 42;
+    if (clientX < bounds.left + edgeSize) {
+      smoothScrollTabsTo(strip.scrollLeft - edgeSize);
+    } else if (clientX > bounds.right - edgeSize) {
+      smoothScrollTabsTo(strip.scrollLeft + edgeSize);
+    }
+  }, [smoothScrollTabsTo]);
+
+  const handleTabPointerDown = useCallback((
+    tabId: string,
+    event: ReactPointerEvent<HTMLElement>,
+  ) => {
+    if (event.button !== 0 || !event.isPrimary || tabs.length < 2) return;
+    tabPointerDragRef.current = {
+      sourceTabId: tabId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setTabDropTarget(null);
+  }, [tabs.length]);
+
+  const handleTabPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const drag = tabPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || (event.buttons & 1) === 0) return;
+    if (!drag.active) {
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (distance < TAB_REORDER_THRESHOLD_PX) return;
+      drag.active = true;
+      document.documentElement.classList.add("tab-pointer-dragging");
+      setDragTabId(drag.sourceTabId);
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    maybeAutoScrollTabs(event.clientX);
+    setTabDropTarget(resolveTabDropTarget(drag.sourceTabId, event.clientX, event.clientY));
+  }, [maybeAutoScrollTabs, resolveTabDropTarget]);
+
+  const handleTabPointerUp = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const drag = tabPointerDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const wasActive = drag.active;
+    const target = wasActive
+      ? resolveTabDropTarget(drag.sourceTabId, event.clientX, event.clientY)
+      : null;
+
+    if (wasActive) {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressTabClickRef.current = true;
+      window.setTimeout(() => {
+        suppressTabClickRef.current = false;
+      }, 0);
+    } else {
+      setActiveTabId(drag.sourceTabId);
+    }
+
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    clearTabPointerDrag();
+    if (target) {
+      setTabs((current) => reorderTabs(
+        current,
+        drag.sourceTabId,
+        target.tabId,
+        target.position,
+      ));
+    }
+  }, [clearTabPointerDrag, resolveTabDropTarget]);
+
+  const handleTabPointerCancel = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (tabPointerDragRef.current?.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    clearTabPointerDrag();
+  }, [clearTabPointerDrag]);
+
+  useEffect(() => () => {
+    document.documentElement.classList.remove("tab-pointer-dragging");
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -983,7 +1227,7 @@ function App() {
 
   if (phase === "loading") return <main className="loading-page"><StandaloneWindowBar /><div className="loader" /><p>正在打开提示词资料库…</p></main>;
   if (phase === "error" || !status) return <main className="loading-page error-page"><StandaloneWindowBar /><ShieldCheck size={36} /><h1>无法启动 PromptHelper</h1><p>{fatalError}</p></main>;
-  if (phase === "locked") return <UnlockScreen status={status} onUnlock={unlock} error={unlockError} />;
+  if (phase === "locked") return <UnlockScreen status={status} onUnlock={unlock} onSelectDataDirectory={selectDataDirectory} error={unlockError} />;
   if (!activeTab) return null;
 
   const categoryCount = types.reduce((total, type) => total + Object.keys(getCategories(data, type)).length, 0);
@@ -1006,6 +1250,8 @@ function App() {
           <div
             className="tabs-scroll"
             ref={tabsScrollRef}
+            role="tablist"
+            aria-label="工作标签"
             onWheel={(event) => {
               const strip = event.currentTarget;
               if (strip.scrollWidth <= strip.clientWidth) return;
@@ -1026,22 +1272,62 @@ function App() {
             }}
           >
             {tabs.map((tab) => {
-              const label = tab.customName || tab.search || tab.categoryName || tab.typeName || "新标签";
-              return <button
+              const label = tab.customName || tab.typeName || "新标签";
+              const directoryTitle = [tab.typeName, tab.categoryName].filter(Boolean).join(" / ") || "新标签";
+              const isActive = tab.id === activeTabId;
+              const isDragging = tab.id === dragTabId;
+              const dropPosition = tabDropTarget?.tabId === tab.id
+                ? tabDropTarget.position
+                : null;
+              return <div
                 key={tab.id}
                 data-workspace-tab-id={tab.id}
-                draggable
-                onDragStart={() => setDragTabId(tab.id)}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={() => moveDraggedTab(tab.id)}
-                onDragEnd={() => setDragTabId(null)}
-                onDoubleClick={() => { setActiveTabId(tab.id); setEntityDialog({ mode: "rename-tab", initial: label }); }}
-                className={`workspace-tab ${tab.id === activeTabId ? "active" : ""}`}
-                onClick={() => setActiveTabId(tab.id)}
+                className={`workspace-tab${isActive ? " active" : ""}${isDragging ? " dragging" : ""}${dropPosition ? ` drop-${dropPosition}` : ""}`}
+                aria-grabbed={isDragging || undefined}
               >
-                <span>{label}</span>
-                {tabs.length > 1 && <i onClick={(event) => { event.stopPropagation(); closeTab(tab.id); }}><X size={13} /></i>}
-              </button>;
+                <button
+                  type="button"
+                  className="workspace-tab-main"
+                  role="tab"
+                  aria-selected={isActive}
+                  title={directoryTitle}
+                  onPointerDown={(event) => handleTabPointerDown(tab.id, event)}
+                  onPointerMove={handleTabPointerMove}
+                  onPointerUp={handleTabPointerUp}
+                  onPointerCancel={handleTabPointerCancel}
+                  onClick={(event) => {
+                    if (suppressTabClickRef.current) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      return;
+                    }
+                    setActiveTabId(tab.id);
+                  }}
+                  onDoubleClick={() => {
+                    setActiveTabId(tab.id);
+                    setEntityDialog({ mode: "rename-tab", initial: label });
+                  }}
+                  onMouseDown={(event) => {
+                    if (event.button !== 1) return;
+                    event.preventDefault();
+                    closeTab(tab.id);
+                  }}
+                >
+                  <span className="workspace-tab-title">{label}</span>
+                </button>
+                <button
+                  type="button"
+                  className="workspace-tab-close"
+                  title={`关闭标签：${label}`}
+                  aria-label={`关闭标签：${label}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeTab(tab.id);
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              </div>;
             })}
           </div>
           <button className="new-tab" onClick={addTab} title="新建标签 (Ctrl+T)"><Plus size={17} /></button>

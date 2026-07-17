@@ -3,15 +3,16 @@ use base64::{
     Engine as _,
 };
 use pbkdf2::pbkdf2_hmac;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::RwLock,
 };
-use tauri::State;
+use tauri::{Manager, State};
 
 const ITERATIONS: u32 = 480_000;
 const SALT_LENGTH: usize = 32;
@@ -19,7 +20,10 @@ const KEY_LENGTH: usize = 32;
 const ENCRYPTED_PREFIX: &str = "ENC:";
 
 struct AppState {
-    data_path: PathBuf,
+    data_path: RwLock<PathBuf>,
+    data_path_config: PathBuf,
+    workspace_state_path: PathBuf,
+    path_configurable: bool,
 }
 
 #[derive(Serialize)]
@@ -28,10 +32,51 @@ struct AppStatus {
     encrypted: bool,
     exists: bool,
     data_path: String,
+    data_directory: String,
+    path_configurable: bool,
 }
 
-fn resolve_data_path() -> PathBuf {
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DataPathConfig {
+    data_path: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceTabState {
+    id: String,
+    type_name: String,
+    category_name: String,
+    search: String,
+    expanded_type_name: Option<String>,
+    custom_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceState {
+    tabs: Vec<WorkspaceTabState>,
+    active_tab_id: String,
+}
+
+fn load_configured_data_path(config_path: &Path) -> Option<PathBuf> {
+    let raw = fs::read_to_string(config_path).ok()?;
+    let config: DataPathConfig = serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()?;
+    let path = config.data_path.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+fn resolve_data_path(config_path: &Path) -> PathBuf {
     if let Some(path) = std::env::var_os("PROMPT_HELPER_DATA_FILE") {
+        return PathBuf::from(path);
+    }
+
+    if let Some(path) = load_configured_data_path(config_path) {
+        return path;
+    }
+
+    if let Some(path) = std::env::var_os("PROMPT_HELPER_DEFAULT_DATA_FILE") {
         return PathBuf::from(path);
     }
 
@@ -53,6 +98,82 @@ fn resolve_data_path() -> PathBuf {
     }
 
     executable_path.unwrap_or_else(|| PathBuf::from("prompts_data.json"))
+}
+
+fn active_data_path(state: &AppState) -> Result<PathBuf, String> {
+    state
+        .data_path
+        .read()
+        .map(|path| path.clone())
+        .map_err(|_| "资料库路径状态不可用，请重启软件".to_string())
+}
+
+fn status_for_path(path: &Path, path_configurable: bool) -> Result<AppStatus, String> {
+    let exists = path.exists();
+    let encrypted = if exists {
+        read_raw(path)?
+            .trim_start_matches('\u{feff}')
+            .starts_with(ENCRYPTED_PREFIX)
+    } else {
+        false
+    };
+    let data_directory = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_string_lossy()
+        .into_owned();
+    Ok(AppStatus {
+        encrypted,
+        exists,
+        data_path: path.to_string_lossy().into_owned(),
+        data_directory,
+        path_configurable,
+    })
+}
+
+fn validate_data_path_for_selection(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = read_raw(path)?;
+    let raw = raw.trim_start_matches('\u{feff}');
+    if raw.starts_with(ENCRYPTED_PREFIX) || raw.trim().is_empty() {
+        return Ok(());
+    }
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|error| format!("所选文件夹内的 prompts_data.json 不是有效 JSON：{error}"))?;
+    validate_prompt_data(&value)
+}
+
+fn persist_data_path(config_path: &Path, data_path: &Path) -> Result<(), String> {
+    let config = DataPathConfig {
+        data_path: data_path.to_string_lossy().into_owned(),
+    };
+    let contents = serde_json::to_string_pretty(&config)
+        .map_err(|error| format!("资料库位置配置序列化失败：{error}"))?;
+    write_safely(config_path, &contents).map_err(|error| format!("无法保存资料库位置设置：{error}"))
+}
+
+fn load_workspace_state_from_path(path: &Path) -> Result<Option<WorkspaceState>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(path).map_err(|error| format!("无法读取工作区状态：{error}"))?;
+    let raw = raw.trim_start_matches('\u{feff}').trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    serde_json::from_str(raw)
+        .map(Some)
+        .map_err(|error| format!("工作区状态格式无效：{error}"))
+}
+
+fn persist_workspace_state(path: &Path, workspace_state: &WorkspaceState) -> Result<(), String> {
+    let contents = serde_json::to_string_pretty(workspace_state)
+        .map_err(|error| format!("工作区状态序列化失败：{error}"))?;
+    write_safely(path, &contents).map_err(|error| format!("无法保存工作区状态：{error}"))
 }
 
 fn read_raw(path: &Path) -> Result<String, String> {
@@ -151,27 +272,38 @@ fn write_safely(path: &Path, contents: &str) -> Result<(), String> {
 
 #[tauri::command]
 fn get_app_status(state: State<'_, AppState>) -> Result<AppStatus, String> {
-    let exists = state.data_path.exists();
-    let encrypted = if exists {
-        read_raw(&state.data_path)?
-            .trim_start_matches('\u{feff}')
-            .starts_with(ENCRYPTED_PREFIX)
-    } else {
-        false
-    };
-    Ok(AppStatus {
-        encrypted,
-        exists,
-        data_path: state.data_path.to_string_lossy().into_owned(),
-    })
+    let path = active_data_path(&state)?;
+    status_for_path(&path, state.path_configurable)
+}
+
+#[tauri::command]
+fn set_data_directory(directory: String, state: State<'_, AppState>) -> Result<AppStatus, String> {
+    if !state.path_configurable {
+        return Err("资料库位置由环境变量 PROMPT_HELPER_DATA_FILE 管理，无法在软件内更改".into());
+    }
+
+    let directory = PathBuf::from(directory);
+    if !directory.is_dir() {
+        return Err("所选资料库文件夹不存在或不可用".into());
+    }
+    let data_path = directory.join("prompts_data.json");
+    validate_data_path_for_selection(&data_path)?;
+    let status = status_for_path(&data_path, true)?;
+    persist_data_path(&state.data_path_config, &data_path)?;
+    *state
+        .data_path
+        .write()
+        .map_err(|_| "资料库路径状态不可用，请重启软件".to_string())? = data_path;
+    Ok(status)
 }
 
 #[tauri::command]
 fn load_data(password: Option<String>, state: State<'_, AppState>) -> Result<Value, String> {
-    if !state.data_path.exists() {
+    let data_path = active_data_path(&state)?;
+    if !data_path.exists() {
         return Ok(serde_json::json!({}));
     }
-    let raw = read_raw(&state.data_path)?;
+    let raw = read_raw(&data_path)?;
     let raw = raw.trim_start_matches('\u{feff}');
     if let Some(payload) = raw.strip_prefix(ENCRYPTED_PREFIX) {
         let password = password
@@ -194,13 +326,27 @@ fn save_data(
     password: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let data_path = active_data_path(&state)?;
     validate_prompt_data(&data)?;
     let contents = match password.filter(|value| !value.is_empty()) {
         Some(password) => encrypt_legacy(&data, &password)?,
         None => serde_json::to_string_pretty(&data)
             .map_err(|error| format!("数据序列化失败：{error}"))?,
     };
-    write_safely(&state.data_path, &contents)
+    write_safely(&data_path, &contents)
+}
+
+#[tauri::command]
+fn load_workspace_state(state: State<'_, AppState>) -> Result<Option<WorkspaceState>, String> {
+    load_workspace_state_from_path(&state.workspace_state_path)
+}
+
+#[tauri::command]
+fn save_workspace_state(
+    workspace_state: WorkspaceState,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    persist_workspace_state(&state.workspace_state_path, &workspace_state)
 }
 
 #[tauri::command]
@@ -229,15 +375,33 @@ fn export_plaintext_file(path: String, data: Value) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState {
-            data_path: resolve_data_path(),
+        .setup(|app| {
+            let app_config_dir = app.path().app_config_dir().unwrap_or_else(|_| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|path| path.parent().map(Path::to_path_buf))
+                    .unwrap_or_else(|| PathBuf::from("."))
+            });
+            let data_path_config = app_config_dir.join("database-location.json");
+            let workspace_state_path = app_config_dir.join("workspace-state.json");
+            let path_configurable = std::env::var_os("PROMPT_HELPER_DATA_FILE").is_none();
+            app.manage(AppState {
+                data_path: RwLock::new(resolve_data_path(&data_path_config)),
+                data_path_config,
+                workspace_state_path,
+                path_configurable,
+            });
+            Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             get_app_status,
+            set_data_directory,
             load_data,
             save_data,
+            load_workspace_state,
+            save_workspace_state,
             import_plaintext_file,
             export_plaintext_file,
         ])
@@ -248,6 +412,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn decrypts_python_v4_compatible_fixture() {
@@ -284,5 +449,81 @@ mod tests {
             "wrong-password"
         )
         .is_err());
+    }
+
+    #[test]
+    fn persisted_data_path_round_trip_preserves_unicode_path() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let config_path = std::env::temp_dir().join(format!(
+            "prompt-helper-database-location-{}-{unique}.json",
+            std::process::id()
+        ));
+        let selected_path = PathBuf::from(r"D:\资料库\prompts_data.json");
+
+        persist_data_path(&config_path, &selected_path).expect("persist data path");
+        assert_eq!(load_configured_data_path(&config_path), Some(selected_path));
+
+        fs::remove_file(config_path).expect("remove test config");
+    }
+
+    #[test]
+    fn invalid_plaintext_database_is_rejected_before_selection() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let data_path = std::env::temp_dir().join(format!(
+            "prompt-helper-invalid-data-{}-{unique}.json",
+            std::process::id()
+        ));
+        fs::write(&data_path, "not-json").expect("write invalid database");
+
+        assert!(validate_data_path_for_selection(&data_path).is_err());
+
+        fs::remove_file(data_path).expect("remove invalid database");
+    }
+
+    #[test]
+    fn workspace_state_round_trip_preserves_tabs_and_active_selection() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let state_path = std::env::temp_dir().join(format!(
+            "prompt-helper-workspace-state-{}-{unique}.json",
+            std::process::id()
+        ));
+        let expected = WorkspaceState {
+            tabs: vec![
+                WorkspaceTabState {
+                    id: "tab-one".into(),
+                    type_name: "图像".into(),
+                    category_name: "人物".into(),
+                    search: String::new(),
+                    expanded_type_name: Some("图像".into()),
+                    custom_name: Some("常用人物".into()),
+                },
+                WorkspaceTabState {
+                    id: "tab-two".into(),
+                    type_name: "视频".into(),
+                    category_name: "分镜".into(),
+                    search: "夜景".into(),
+                    expanded_type_name: Some("视频".into()),
+                    custom_name: None,
+                },
+            ],
+            active_tab_id: "tab-two".into(),
+        };
+
+        persist_workspace_state(&state_path, &expected).expect("persist workspace state");
+        assert_eq!(
+            load_workspace_state_from_path(&state_path).expect("load workspace state"),
+            Some(expected)
+        );
+
+        fs::remove_file(state_path).expect("remove workspace state");
     }
 }

@@ -1,16 +1,16 @@
 @echo off
+chcp 65001 >nul
 setlocal EnableExtensions
 title PromptHelper V5 - Development
 
 cd /d "%~dp0"
 
-set "SHARED_DATA_FILE=D:\Data\SynologyDrive\Codes\AI\prompt_helper\dist\prompts_data.json"
-if not exist "%SHARED_DATA_FILE%" (
-    echo [ERROR] Shared data file was not found:
-    echo %SHARED_DATA_FILE%
-    goto :failed
+set "PROMPT_HELPER_DEFAULT_DATA_FILE=D:\Data\SynologyDrive\Codes\AI\prompt_helper_数据库在这里别删\dist\prompts_data.json"
+if not exist "%PROMPT_HELPER_DEFAULT_DATA_FILE%" (
+    echo [WARN] Default data file was not found. Select another folder on the startup screen:
+    echo %PROMPT_HELPER_DEFAULT_DATA_FILE%
+    echo.
 )
-set "PROMPT_HELPER_DATA_FILE=%SHARED_DATA_FILE%"
 
 if exist "C:\Users\Raydio\.cargo\bin\cargo.exe" (
     set "PATH=C:\Users\Raydio\.cargo\bin;%PATH%"
@@ -36,7 +36,8 @@ if not exist "node_modules\." (
 
 if /i "%~1"=="--check" (
     echo [PromptHelper] Environment check passed.
-    echo [PromptHelper] Shared data file: %PROMPT_HELPER_DATA_FILE%
+    echo [PromptHelper] Default data file: %PROMPT_HELPER_DEFAULT_DATA_FILE%
+    echo [PromptHelper] The database folder can be changed and remembered on the startup screen.
     exit /b 0
 )
 

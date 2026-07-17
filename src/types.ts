@@ -21,6 +21,8 @@ export type AppStatus = {
   encrypted: boolean;
   exists: boolean;
   dataPath: string;
+  dataDirectory: string;
+  pathConfigurable: boolean;
 };
 
 export type WorkspaceTab = {
@@ -30,6 +32,11 @@ export type WorkspaceTab = {
   search: string;
   expandedTypeName?: string;
   customName?: string;
+};
+
+export type WorkspaceState = {
+  tabs: WorkspaceTab[];
+  activeTabId: string;
 };
 
 export type PromptLocation = {
