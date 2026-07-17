@@ -1,6 +1,6 @@
 [package]
 name = "prompt-helper"
-version = "5.0.0"
+version = "5.1.0"
 description = "A modern prompt library rebuilt with Tauri 2"
 authors = ["Raydio"]
 edition = "2021"

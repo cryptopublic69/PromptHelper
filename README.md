@@ -249,7 +249,7 @@ C:\Users\Raydio\.cargo\bin\cargo.exe test --manifest-path .\src-tauri\Cargo.toml
 npm run tauri build
 ```
 
-默认生成 NSIS 安装包，当前项目版本为 `5.0.0`。
+默认生成 NSIS 安装包，当前项目版本为 `5.1.0`。
 
 ## 当前功能边界
 

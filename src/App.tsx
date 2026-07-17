@@ -28,6 +28,7 @@ import {
   Sparkles,
   Sun,
   Trash2,
+  TriangleAlert,
   Upload,
   X,
 } from "lucide-react";
@@ -1344,7 +1345,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><img src={appIconUrl} alt="" /></div>
-          <div><strong>PromptHelper</strong><span>提示词工作台 · V5</span></div>
+          <div><strong>PromptHelper</strong><span>提示词工作台 · V5.1</span></div>
         </div>
 
         <div className="library-overview">
@@ -1812,36 +1813,61 @@ function EntityModal({ dialog, onClose, onSave }: { dialog: EntityDialog; onClos
 
 function PromptEditor({ dialog, onClose, onSave }: { dialog: PromptDialog; onClose: () => void; onSave: (title: string, content: string) => void }) {
   const source = dialog.mode === "edit" ? dialog.location?.prompt : undefined;
-  const [title, setTitle] = useState(source ? promptTitle(source) : "");
-  const [content, setContent] = useState(source ? promptContent(source) : "");
-  return <Modal wide title={dialog.mode === "add" ? "添加提示词" : "编辑提示词"} subtitle="标题可选；复制时只会复制正文内容" onClose={onClose} icon={<FileText size={19} />}>
-    <form onSubmit={(event) => { event.preventDefault(); onSave(title, content); }}>
-      <label className="field-label">标题 <span>可选</span></label>
-      <input className="text-input" autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：电影感人物特写" />
-      <label className="field-label field-spaced">提示词内容</label>
-      <textarea
-        className="text-area"
-        value={content}
-        onChange={(event) => setContent(event.target.value)}
-        onKeyDown={(event) => {
-          if ((event.ctrlKey && event.key === "Enter") || (event.ctrlKey && event.key.toLowerCase() === "s")) {
-            event.preventDefault();
-            if (title.trim() || content.trim()) onSave(title, content);
-          }
-        }}
-        placeholder="输入完整提示词…"
-      />
-      <div className="editor-meta"><span>{content.length} 字符</span><span>Ctrl + Enter 保存</span></div>
-      <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!title.trim() && !content.trim()}><Check size={16} />保存</button></div>
-    </form>
-  </Modal>;
+  const initialTitle = source ? promptTitle(source) : "";
+  const initialContent = source ? promptContent(source) : "";
+  const [title, setTitle] = useState(initialTitle);
+  const [content, setContent] = useState(initialContent);
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const isDirty = title !== initialTitle || content !== initialContent;
+  const requestClose = () => {
+    if (isDirty) {
+      setDiscardConfirmOpen(true);
+      return;
+    }
+    onClose();
+  };
+
+  return <>
+    <Modal wide title={dialog.mode === "add" ? "添加提示词" : "编辑提示词"} subtitle="标题可选；复制时只会复制正文内容" onClose={requestClose} icon={<FileText size={19} />}>
+      <form onSubmit={(event) => { event.preventDefault(); onSave(title, content); }}>
+        <label className="field-label">标题 <span>可选</span></label>
+        <input className="text-input" autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：电影感人物特写" />
+        <label className="field-label field-spaced">提示词内容</label>
+        <textarea
+          className="text-area prompt-editor-area"
+          value={content}
+          onChange={(event) => setContent(event.target.value)}
+          onKeyDown={(event) => {
+            if ((event.ctrlKey && event.key === "Enter") || (event.ctrlKey && event.key.toLowerCase() === "s")) {
+              event.preventDefault();
+              if (title.trim() || content.trim()) onSave(title, content);
+            }
+          }}
+          placeholder="输入完整提示词…"
+        />
+        <div className="editor-meta"><span>{content.length} 字符</span><span>Ctrl + Enter 保存</span></div>
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={requestClose}>取消</button><button className="primary-button" disabled={!title.trim() && !content.trim()}><Check size={16} />保存</button></div>
+      </form>
+    </Modal>
+    {discardConfirmOpen && <Modal title="放弃未保存的更改？" subtitle="当前编辑内容尚未保存" onClose={() => setDiscardConfirmOpen(false)} icon={<TriangleAlert size={18} />}>
+      <p className="confirm-copy">标题或提示词内容已经更改。关闭后，这些更改将无法恢复。</p>
+      <div className="modal-actions"><button className="secondary-button" onClick={() => setDiscardConfirmOpen(false)}>继续编辑</button><button className="danger-button" onClick={onClose}>不保存并关闭</button></div>
+    </Modal>}
+  </>;
 }
 
 function PromptViewer({ location, onClose, onCopy, onEdit }: { location: PromptLocation; onClose: () => void; onCopy: () => void; onEdit: () => void }) {
   const title = promptTitle(location.prompt);
   const content = promptContent(location.prompt);
+  const contentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = contentRef.current;
+    if (!element) return;
+    const initialMaxHeight = Math.max(150, Math.min(520, window.innerHeight - 240));
+    if (element.scrollHeight > initialMaxHeight) element.style.height = `${initialMaxHeight}px`;
+  }, [content]);
   return <Modal wide title={title || "提示词详情"} subtitle={`${location.typeName} / ${location.categoryName}`} onClose={onClose} icon={<Eye size={19} />}>
-    <div className="prompt-viewer-content">{content || <span>（无正文）</span>}</div>
+    <div ref={contentRef} className="prompt-viewer-content">{content || <span>（无正文）</span>}</div>
     <div className="editor-meta"><span>{content.length} 字符</span><span>完整内容</span></div>
     <div className="modal-actions"><button className="secondary-button" onClick={onClose}>关闭</button><button className="secondary-button" onClick={onEdit}><Pencil size={16} />编辑</button><button className="primary-button" onClick={onCopy}><Copy size={16} />复制内容</button></div>
   </Modal>;
