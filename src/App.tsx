@@ -188,6 +188,14 @@ const isPromptDialogDirty = (dialog: PromptDialogState) => {
   return dialog.title !== initial.title || dialog.content !== initial.content;
 };
 
+const isPromptDialogDirtyForTab = (
+  modals: Record<string, TabModalState>,
+  tabId: string,
+) => {
+  const promptDialog = modals[tabId]?.promptDialog;
+  return Boolean(promptDialog && isPromptDialogDirty(promptDialog));
+};
+
 const compactTabModalState = (state: TabModalState): TabModalState | null => (
   state.entityDialog || state.promptDialog || state.promptViewer || state.moveDialog || state.confirmation
     ? state
@@ -214,10 +222,7 @@ const getDirtyPromptTabIds = (
   modals: Record<string, TabModalState>,
 ) => tabs
   .map((tab) => tab.id)
-  .filter((tabId) => {
-    const promptDialog = modals[tabId]?.promptDialog;
-    return Boolean(promptDialog && isPromptDialogDirty(promptDialog));
-  });
+  .filter((tabId) => isPromptDialogDirtyForTab(modals, tabId));
 
 const runWindowAction = (action: () => Promise<void>) => {
   void action().catch((error) => console.error("Window action failed", error));
@@ -403,6 +408,7 @@ function App() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [tabModals, setTabModals] = useState<Record<string, TabModalState>>({});
   const [windowCloseReviewActive, setWindowCloseReviewActive] = useState(false);
+  const [tabCloseReviewId, setTabCloseReviewId] = useState<string | null>(null);
   const [importDraft, setImportDraft] = useState<PromptData | null>(null);
   const [securityMode, setSecurityMode] = useState<"manage" | "enable" | "change" | "disable" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -777,6 +783,31 @@ function App() {
     () => getDirtyPromptTabIds(tabs, tabModals),
     [tabs, tabModals],
   );
+  const tabCloseReviewActive = Boolean(tabCloseReviewId && tabCloseReviewId === activeTabId);
+
+  const cancelTabCloseReview = () => {
+    const targetTabId = tabCloseReviewId;
+    if (!targetTabId) return;
+
+    setTabCloseReviewId(null);
+    setTabModals((current) => {
+      const promptDialog = current[targetTabId]?.promptDialog;
+      if (!promptDialog) return current;
+      const next = setPromptDialogForTab(current, targetTabId, {
+        ...promptDialog,
+        discardConfirmOpen: false,
+      });
+      tabModalsRef.current = next;
+      return next;
+    });
+  };
+
+  const discardPromptDialogAndCloseTab = () => {
+    const targetTabId = tabCloseReviewId;
+    if (!targetTabId) return;
+    setTabCloseReviewId(null);
+    closeTabWithoutPrompt(targetTabId);
+  };
 
   const cancelWindowCloseReview = () => {
     const dirtyTabIds = getDirtyPromptTabIds(tabsRef.current, tabModalsRef.current);
@@ -911,26 +942,62 @@ function App() {
     setActiveTabId(tab.id);
   };
 
-  const closeTab = (id: string) => {
-    const index = tabs.findIndex((tab) => tab.id === id);
+  const closeTabWithoutPrompt = (id: string) => {
+    const currentTabs = tabsRef.current;
+    const index = currentTabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
 
-    if (tabs.length === 1) {
+    if (currentTabs.length === 1) {
       const blankTab = createBlankTab();
+      tabsRef.current = [blankTab];
+      activeTabIdRef.current = blankTab.id;
       setTabs([blankTab]);
       setActiveTabId(blankTab.id);
       setTabModals({});
+      setTabCloseReviewId(null);
       return;
     }
 
-    const next = tabs.filter((tab) => tab.id !== id);
+    const next = currentTabs.filter((tab) => tab.id !== id);
+    tabsRef.current = next;
     setTabs(next);
     setTabModals((current) => {
       const updated = { ...current };
       delete updated[id];
+      tabModalsRef.current = updated;
       return updated;
     });
-    if (id === activeTabId) setActiveTabId(next[Math.min(index, next.length - 1)].id);
+    setTabCloseReviewId((current) => (current === id ? null : current));
+    if (id === activeTabIdRef.current) {
+      const nextActiveTabId = next[Math.min(index, next.length - 1)].id;
+      activeTabIdRef.current = nextActiveTabId;
+      setActiveTabId(nextActiveTabId);
+    }
+  };
+
+  const closeTab = (id: string) => {
+    const index = tabsRef.current.findIndex((tab) => tab.id === id);
+    if (index < 0) return;
+
+    if (isPromptDialogDirtyForTab(tabModalsRef.current, id)) {
+      setWindowCloseReviewActive(false);
+      setTabCloseReviewId(id);
+      setActiveTabId(id);
+      activeTabIdRef.current = id;
+      setTabModals((current) => {
+        const promptDialog = current[id]?.promptDialog;
+        if (!promptDialog) return current;
+        const next = setPromptDialogForTab(current, id, {
+          ...promptDialog,
+          discardConfirmOpen: true,
+        });
+        tabModalsRef.current = next;
+        return next;
+      });
+      return;
+    }
+
+    closeTabWithoutPrompt(id);
   };
 
   const clearTabPointerDrag = useCallback(() => {
@@ -1481,6 +1548,7 @@ function App() {
             }
           }}
         >
+          <div className="tabs-app-logo" aria-hidden="true" data-tauri-drag-region />
           <div
             className="tabs-scroll"
             ref={tabsScrollRef}
@@ -2023,10 +2091,13 @@ function App() {
         }))}
         onClose={closePromptDialog}
         windowCloseReviewActive={windowCloseReviewActive}
+        tabCloseReviewActive={tabCloseReviewActive}
         dirtyPromptCount={dirtyPromptTabIds.length}
         onCancelWindowCloseReview={cancelWindowCloseReview}
+        onCancelTabCloseReview={cancelTabCloseReview}
         onDiscardForWindowClose={discardCurrentPromptDialogForWindowClose}
         onDiscardAllForWindowClose={discardAllPromptDialogsAndCloseWindow}
+        onDiscardForTabClose={discardPromptDialogAndCloseTab}
         onSave={savePrompt}
       />}
       {promptViewer && <PromptViewer
@@ -2091,20 +2162,26 @@ function PromptEditor({
   onChange,
   onClose,
   windowCloseReviewActive,
+  tabCloseReviewActive,
   dirtyPromptCount,
   onCancelWindowCloseReview,
+  onCancelTabCloseReview,
   onDiscardForWindowClose,
   onDiscardAllForWindowClose,
+  onDiscardForTabClose,
   onSave,
 }: {
   dialog: PromptDialogState;
   onChange: (patch: Partial<Pick<PromptDialogState, "title" | "content" | "discardConfirmOpen">>) => void;
   onClose: () => void;
   windowCloseReviewActive: boolean;
+  tabCloseReviewActive: boolean;
   dirtyPromptCount: number;
   onCancelWindowCloseReview: () => void;
+  onCancelTabCloseReview: () => void;
   onDiscardForWindowClose: () => void;
   onDiscardAllForWindowClose: () => void;
+  onDiscardForTabClose: () => void;
   onSave: (title: string, content: string) => void;
 }) {
   const initial = getPromptDialogInitialValues(dialog);
@@ -2121,11 +2198,19 @@ function PromptEditor({
       onCancelWindowCloseReview();
       return;
     }
+    if (tabCloseReviewActive) {
+      onCancelTabCloseReview();
+      return;
+    }
     onChange({ discardConfirmOpen: false });
   };
   const discardCurrent = () => {
     if (windowCloseReviewActive) {
       onDiscardForWindowClose();
+      return;
+    }
+    if (tabCloseReviewActive) {
+      onDiscardForTabClose();
       return;
     }
     onClose();
