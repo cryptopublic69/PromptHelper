@@ -175,6 +175,50 @@ type TabModalState = {
 
 type Toast = { kind: "success" | "error" | "info"; message: string };
 
+const getPromptDialogInitialValues = (dialog: PromptDialog) => {
+  const source = dialog.mode === "edit" ? dialog.location?.prompt : undefined;
+  return {
+    title: source ? promptTitle(source) : "",
+    content: source ? promptContent(source) : "",
+  };
+};
+
+const isPromptDialogDirty = (dialog: PromptDialogState) => {
+  const initial = getPromptDialogInitialValues(dialog);
+  return dialog.title !== initial.title || dialog.content !== initial.content;
+};
+
+const compactTabModalState = (state: TabModalState): TabModalState | null => (
+  state.entityDialog || state.promptDialog || state.promptViewer || state.moveDialog || state.confirmation
+    ? state
+    : null
+);
+
+const setPromptDialogForTab = (
+  modals: Record<string, TabModalState>,
+  tabId: string,
+  promptDialog: PromptDialogState | null,
+) => {
+  const next = { ...modals };
+  const nextState = compactTabModalState({ ...(next[tabId] || {}), promptDialog });
+  if (nextState) {
+    next[tabId] = nextState;
+  } else {
+    delete next[tabId];
+  }
+  return next;
+};
+
+const getDirtyPromptTabIds = (
+  tabs: WorkspaceTab[],
+  modals: Record<string, TabModalState>,
+) => tabs
+  .map((tab) => tab.id)
+  .filter((tabId) => {
+    const promptDialog = modals[tabId]?.promptDialog;
+    return Boolean(promptDialog && isPromptDialogDirty(promptDialog));
+  });
+
 const runWindowAction = (action: () => Promise<void>) => {
   void action().catch((error) => console.error("Window action failed", error));
 };
@@ -358,6 +402,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [tabModals, setTabModals] = useState<Record<string, TabModalState>>({});
+  const [windowCloseReviewActive, setWindowCloseReviewActive] = useState(false);
   const [importDraft, setImportDraft] = useState<PromptData | null>(null);
   const [securityMode, setSecurityMode] = useState<"manage" | "enable" | "change" | "disable" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -380,6 +425,7 @@ function App() {
   const tabsScrollFrameRef = useRef<number | null>(null);
   const tabsRef = useRef<WorkspaceTab[]>([]);
   const activeTabIdRef = useRef("");
+  const tabModalsRef = useRef<Record<string, TabModalState>>({});
   const workspaceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const allowWindowCloseRef = useRef(false);
   const tabPointerDragRef = useRef<{
@@ -418,6 +464,48 @@ function App() {
 
   tabsRef.current = tabs;
   activeTabIdRef.current = activeTabId;
+  tabModalsRef.current = tabModals;
+
+  const saveWorkspaceStateBeforeClose = async () => {
+    const latestTabs = tabsRef.current;
+    const latestActiveTabId = activeTabIdRef.current;
+    if (!latestTabs.length) return;
+    await workspaceSaveQueueRef.current;
+    await api.saveWorkspaceState({
+      tabs: latestTabs,
+      activeTabId: latestActiveTabId,
+    });
+  };
+
+  const destroyWindowAfterWorkspaceSave = async () => {
+    try {
+      await saveWorkspaceStateBeforeClose();
+    } catch (error) {
+      console.error("关闭前保存工作区状态失败", error);
+    } finally {
+      allowWindowCloseRef.current = true;
+      await appWindow.destroy();
+    }
+  };
+
+  const focusDirtyPromptTabForWindowClose = (dirtyTabIds: string[]) => {
+    const currentActiveTabId = activeTabIdRef.current;
+    const targetTabId = dirtyTabIds.includes(currentActiveTabId)
+      ? currentActiveTabId
+      : dirtyTabIds[0];
+    if (!targetTabId) return;
+
+    setWindowCloseReviewActive(true);
+    setActiveTabId(targetTabId);
+    setTabModals((current) => {
+      const promptDialog = current[targetTabId]?.promptDialog;
+      if (!promptDialog) return current;
+      return setPromptDialogForTab(current, targetTabId, {
+        ...promptDialog,
+        discardConfirmOpen: true,
+      });
+    });
+  };
 
   const initialiseTabs = async (loaded: PromptData) => {
     const types = getTypes(loaded);
@@ -496,22 +584,13 @@ function App() {
       if (allowWindowCloseRef.current) return;
       event.preventDefault();
 
-      try {
-        const latestTabs = tabsRef.current;
-        const latestActiveTabId = activeTabIdRef.current;
-        if (latestTabs.length) {
-          await workspaceSaveQueueRef.current;
-          await api.saveWorkspaceState({
-            tabs: latestTabs,
-            activeTabId: latestActiveTabId,
-          });
-        }
-      } catch (error) {
-        console.error("关闭前保存工作区状态失败", error);
-      } finally {
-        allowWindowCloseRef.current = true;
-        await appWindow.destroy();
+      const dirtyTabIds = getDirtyPromptTabIds(tabsRef.current, tabModalsRef.current);
+      if (dirtyTabIds.length) {
+        focusDirtyPromptTabForWindowClose(dirtyTabIds);
+        return;
       }
+
+      await destroyWindowAfterWorkspaceSave();
     }).then((stopListening) => {
       unlisten = stopListening;
     });
@@ -632,12 +711,6 @@ function App() {
   const moveLocation = moveDialog?.location || null;
   const confirmation = activeTabModals.confirmation || null;
 
-  const compactTabModalState = (state: TabModalState): TabModalState | null => (
-    state.entityDialog || state.promptDialog || state.promptViewer || state.moveDialog || state.confirmation
-      ? state
-      : null
-  );
-
   const updateTabModalState = useCallback((tabId: string, updater: (current: TabModalState) => TabModalState) => {
     setTabModals((current) => {
       const nextState = compactTabModalState(updater(current[tabId] || {}));
@@ -656,11 +729,11 @@ function App() {
   }, [updateTabModalState]);
 
   const createPromptDialogState = (dialog: PromptDialog): PromptDialogState => {
-    const source = dialog.mode === "edit" ? dialog.location?.prompt : undefined;
+    const initial = getPromptDialogInitialValues(dialog);
     return {
       ...dialog,
-      title: source ? promptTitle(source) : "",
-      content: source ? promptContent(source) : "",
+      title: initial.title,
+      content: initial.content,
       discardConfirmOpen: false,
     };
   };
@@ -700,6 +773,66 @@ function App() {
   const closePromptViewer = () => updateActiveTabModalState((current) => ({ ...current, promptViewer: null }));
   const closeMoveDialog = () => updateActiveTabModalState((current) => ({ ...current, moveDialog: null }));
   const closeConfirmation = () => updateActiveTabModalState((current) => ({ ...current, confirmation: null }));
+  const dirtyPromptTabIds = useMemo(
+    () => getDirtyPromptTabIds(tabs, tabModals),
+    [tabs, tabModals],
+  );
+
+  const cancelWindowCloseReview = () => {
+    const dirtyTabIds = getDirtyPromptTabIds(tabsRef.current, tabModalsRef.current);
+    let nextModals = tabModalsRef.current;
+    dirtyTabIds.forEach((tabId) => {
+      const promptDialog = nextModals[tabId]?.promptDialog;
+      if (promptDialog?.discardConfirmOpen) {
+        nextModals = setPromptDialogForTab(nextModals, tabId, {
+          ...promptDialog,
+          discardConfirmOpen: false,
+        });
+      }
+    });
+    tabModalsRef.current = nextModals;
+    setTabModals(nextModals);
+    setWindowCloseReviewActive(false);
+  };
+
+  const discardCurrentPromptDialogForWindowClose = () => {
+    const currentTabId = activeTabIdRef.current;
+    if (!currentTabId) return;
+
+    let nextModals = setPromptDialogForTab(tabModalsRef.current, currentTabId, null);
+    const remainingDirtyTabIds = getDirtyPromptTabIds(tabsRef.current, nextModals);
+    const nextTabId = remainingDirtyTabIds[0];
+    if (!nextTabId) {
+      tabModalsRef.current = nextModals;
+      setTabModals(nextModals);
+      setWindowCloseReviewActive(false);
+      void destroyWindowAfterWorkspaceSave();
+      return;
+    }
+
+    const nextPromptDialog = nextModals[nextTabId]?.promptDialog;
+    if (nextPromptDialog) {
+      nextModals = setPromptDialogForTab(nextModals, nextTabId, {
+        ...nextPromptDialog,
+        discardConfirmOpen: true,
+      });
+    }
+    tabModalsRef.current = nextModals;
+    setTabModals(nextModals);
+    setActiveTabId(nextTabId);
+  };
+
+  const discardAllPromptDialogsAndCloseWindow = () => {
+    const dirtyTabIds = getDirtyPromptTabIds(tabsRef.current, tabModalsRef.current);
+    let nextModals = tabModalsRef.current;
+    dirtyTabIds.forEach((tabId) => {
+      nextModals = setPromptDialogForTab(nextModals, tabId, null);
+    });
+    tabModalsRef.current = nextModals;
+    setTabModals(nextModals);
+    setWindowCloseReviewActive(false);
+    void destroyWindowAfterWorkspaceSave();
+  };
 
   const unlock = async (value: string) => {
     try {
@@ -1889,6 +2022,11 @@ function App() {
           promptDialog: current.promptDialog ? { ...current.promptDialog, ...patch } : current.promptDialog,
         }))}
         onClose={closePromptDialog}
+        windowCloseReviewActive={windowCloseReviewActive}
+        dirtyPromptCount={dirtyPromptTabIds.length}
+        onCancelWindowCloseReview={cancelWindowCloseReview}
+        onDiscardForWindowClose={discardCurrentPromptDialogForWindowClose}
+        onDiscardAllForWindowClose={discardAllPromptDialogsAndCloseWindow}
         onSave={savePrompt}
       />}
       {promptViewer && <PromptViewer
@@ -1952,20 +2090,42 @@ function PromptEditor({
   dialog,
   onChange,
   onClose,
+  windowCloseReviewActive,
+  dirtyPromptCount,
+  onCancelWindowCloseReview,
+  onDiscardForWindowClose,
+  onDiscardAllForWindowClose,
   onSave,
 }: {
   dialog: PromptDialogState;
   onChange: (patch: Partial<Pick<PromptDialogState, "title" | "content" | "discardConfirmOpen">>) => void;
   onClose: () => void;
+  windowCloseReviewActive: boolean;
+  dirtyPromptCount: number;
+  onCancelWindowCloseReview: () => void;
+  onDiscardForWindowClose: () => void;
+  onDiscardAllForWindowClose: () => void;
   onSave: (title: string, content: string) => void;
 }) {
-  const source = dialog.mode === "edit" ? dialog.location?.prompt : undefined;
-  const initialTitle = source ? promptTitle(source) : "";
-  const initialContent = source ? promptContent(source) : "";
-  const isDirty = dialog.title !== initialTitle || dialog.content !== initialContent;
+  const initial = getPromptDialogInitialValues(dialog);
+  const isDirty = dialog.title !== initial.title || dialog.content !== initial.content;
   const requestClose = () => {
     if (isDirty) {
       onChange({ discardConfirmOpen: true });
+      return;
+    }
+    onClose();
+  };
+  const closeDiscardConfirm = () => {
+    if (windowCloseReviewActive) {
+      onCancelWindowCloseReview();
+      return;
+    }
+    onChange({ discardConfirmOpen: false });
+  };
+  const discardCurrent = () => {
+    if (windowCloseReviewActive) {
+      onDiscardForWindowClose();
       return;
     }
     onClose();
@@ -1993,9 +2153,13 @@ function PromptEditor({
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={requestClose}>取消</button><button className="primary-button" disabled={!dialog.title.trim() && !dialog.content.trim()}><Check size={16} />保存</button></div>
       </form>
     </Modal>
-    {dialog.discardConfirmOpen && <Modal title="放弃未保存的更改？" subtitle="当前编辑内容尚未保存" onClose={() => onChange({ discardConfirmOpen: false })} icon={<TriangleAlert size={18} />}>
+    {dialog.discardConfirmOpen && <Modal title="放弃未保存的更改？" subtitle="当前编辑内容尚未保存" onClose={closeDiscardConfirm} icon={<TriangleAlert size={18} />}>
       <p className="confirm-copy">标题或提示词内容已经更改。关闭后，这些更改将无法恢复。</p>
-      <div className="modal-actions"><button className="secondary-button" onClick={() => onChange({ discardConfirmOpen: false })}>继续编辑</button><button className="danger-button" onClick={onClose}>不保存并关闭</button></div>
+      <div className="modal-actions">
+        <button className="secondary-button" onClick={closeDiscardConfirm}>继续编辑</button>
+        {windowCloseReviewActive && dirtyPromptCount > 1 && <button className="danger-button" onClick={onDiscardAllForWindowClose}>全部不保存并关闭</button>}
+        <button className="danger-button" onClick={discardCurrent}>不保存并关闭</button>
+      </div>
     </Modal>}
   </>;
 }
