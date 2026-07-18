@@ -151,6 +151,28 @@ type Confirmation = {
   action: () => void | Promise<void>;
 };
 
+type EntityDialogState = EntityDialog & { value: string };
+
+type PromptDialogState = PromptDialog & {
+  title: string;
+  content: string;
+  discardConfirmOpen: boolean;
+};
+
+type MoveDialogState = {
+  location: PromptLocation;
+  expandedTypeName: string;
+  selected: string;
+};
+
+type TabModalState = {
+  entityDialog?: EntityDialogState | null;
+  promptDialog?: PromptDialogState | null;
+  promptViewer?: PromptLocation | null;
+  moveDialog?: MoveDialogState | null;
+  confirmation?: Confirmation | null;
+};
+
 type Toast = { kind: "success" | "error" | "info"; message: string };
 
 const runWindowAction = (action: () => Promise<void>) => {
@@ -210,7 +232,7 @@ function Modal({
   }, [onClose]);
 
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
+    <div className="modal-backdrop">
       <section
         className={`modal ${wide ? "modal-wide" : ""}`}
         onMouseDown={(event) => event.stopPropagation()}
@@ -335,11 +357,7 @@ function App() {
   const [activeTabId, setActiveTabId] = useState("");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [entityDialog, setEntityDialog] = useState<EntityDialog | null>(null);
-  const [promptDialog, setPromptDialog] = useState<PromptDialog | null>(null);
-  const [promptViewer, setPromptViewer] = useState<PromptLocation | null>(null);
-  const [moveLocation, setMoveLocation] = useState<PromptLocation | null>(null);
-  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [tabModals, setTabModals] = useState<Record<string, TabModalState>>({});
   const [importDraft, setImportDraft] = useState<PromptData | null>(null);
   const [securityMode, setSecurityMode] = useState<"manage" | "enable" | "change" | "disable" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -606,6 +624,82 @@ function App() {
       prompt,
     }));
   }, [activeTab, categoryPrompts, data]);
+  const activeTabModals = activeTabId ? tabModals[activeTabId] || {} : {};
+  const entityDialog = activeTabModals.entityDialog || null;
+  const promptDialog = activeTabModals.promptDialog || null;
+  const promptViewer = activeTabModals.promptViewer || null;
+  const moveDialog = activeTabModals.moveDialog || null;
+  const moveLocation = moveDialog?.location || null;
+  const confirmation = activeTabModals.confirmation || null;
+
+  const compactTabModalState = (state: TabModalState): TabModalState | null => (
+    state.entityDialog || state.promptDialog || state.promptViewer || state.moveDialog || state.confirmation
+      ? state
+      : null
+  );
+
+  const updateTabModalState = useCallback((tabId: string, updater: (current: TabModalState) => TabModalState) => {
+    setTabModals((current) => {
+      const nextState = compactTabModalState(updater(current[tabId] || {}));
+      if (!nextState) {
+        const next = { ...current };
+        delete next[tabId];
+        return next;
+      }
+      return { ...current, [tabId]: nextState };
+    });
+  }, []);
+
+  const updateActiveTabModalState = useCallback((updater: (current: TabModalState) => TabModalState) => {
+    if (!activeTabIdRef.current) return;
+    updateTabModalState(activeTabIdRef.current, updater);
+  }, [updateTabModalState]);
+
+  const createPromptDialogState = (dialog: PromptDialog): PromptDialogState => {
+    const source = dialog.mode === "edit" ? dialog.location?.prompt : undefined;
+    return {
+      ...dialog,
+      title: source ? promptTitle(source) : "",
+      content: source ? promptContent(source) : "",
+      discardConfirmOpen: false,
+    };
+  };
+
+  const openEntityDialog = (dialog: EntityDialog, tabId = activeTabIdRef.current) => {
+    if (!tabId) return;
+    updateTabModalState(tabId, (current) => ({
+      ...current,
+      entityDialog: { ...dialog, value: dialog.initial || "" },
+    }));
+  };
+
+  const openPromptDialog = (dialog: PromptDialog) => {
+    updateActiveTabModalState((current) => ({
+      ...current,
+      promptDialog: createPromptDialogState(dialog),
+    }));
+  };
+
+  const openPromptViewer = (location: PromptLocation) => {
+    updateActiveTabModalState((current) => ({ ...current, promptViewer: location }));
+  };
+
+  const openMoveDialog = (location: PromptLocation) => {
+    updateActiveTabModalState((current) => ({
+      ...current,
+      moveDialog: { location, expandedTypeName: "", selected: "" },
+    }));
+  };
+
+  const openConfirmation = (nextConfirmation: Confirmation) => {
+    updateActiveTabModalState((current) => ({ ...current, confirmation: nextConfirmation }));
+  };
+
+  const closeEntityDialog = () => updateActiveTabModalState((current) => ({ ...current, entityDialog: null }));
+  const closePromptDialog = () => updateActiveTabModalState((current) => ({ ...current, promptDialog: null }));
+  const closePromptViewer = () => updateActiveTabModalState((current) => ({ ...current, promptViewer: null }));
+  const closeMoveDialog = () => updateActiveTabModalState((current) => ({ ...current, moveDialog: null }));
+  const closeConfirmation = () => updateActiveTabModalState((current) => ({ ...current, confirmation: null }));
 
   const unlock = async (value: string) => {
     try {
@@ -692,11 +786,17 @@ function App() {
       const blankTab = createBlankTab();
       setTabs([blankTab]);
       setActiveTabId(blankTab.id);
+      setTabModals({});
       return;
     }
 
     const next = tabs.filter((tab) => tab.id !== id);
     setTabs(next);
+    setTabModals((current) => {
+      const updated = { ...current };
+      delete updated[id];
+      return updated;
+    });
     if (id === activeTabId) setActiveTabId(next[Math.min(index, next.length - 1)].id);
   };
 
@@ -936,7 +1036,7 @@ function App() {
     const mode = entityDialog.mode;
     if (mode === "rename-tab") {
       patchTab(activeTab.id, { customName: name });
-      setEntityDialog(null);
+      closeEntityDialog();
       return;
     }
     if (mode === "add-type") {
@@ -985,12 +1085,12 @@ function App() {
         ));
       }
     }
-    setEntityDialog(null);
+    closeEntityDialog();
   };
 
   const deleteType = (typeName: string) => {
     if (!typeName) return;
-    setConfirmation({
+    openConfirmation({
       title: "删除整个类型？",
       message: `「${typeName}」下的全部分类和提示词都会永久删除。`,
       confirmLabel: "删除类型",
@@ -1006,7 +1106,7 @@ function App() {
 
   const deleteCategory = (typeName: string, categoryName: string) => {
     if (!typeName || !categoryName) return;
-    setConfirmation({
+    openConfirmation({
       title: "删除这个分类？",
       message: `「${categoryName}」内的全部提示词都会永久删除。`,
       confirmLabel: "删除分类",
@@ -1042,7 +1142,7 @@ function App() {
           };
       await persist(next, "提示词已更新");
     }
-    setPromptDialog(null);
+    closePromptDialog();
   };
 
   const deletePrompt = async (location: PromptLocation) => {
@@ -1146,7 +1246,7 @@ function App() {
     await persist(next, "提示词顺序已更新");
   };
 
-  const requestDeletePrompt = (location: PromptLocation) => setConfirmation({
+  const requestDeletePrompt = (location: PromptLocation) => openConfirmation({
     title: "删除这条提示词？",
     message: promptTitle(location.prompt) || promptContent(location.prompt).slice(0, 72),
     confirmLabel: "确认删除",
@@ -1166,7 +1266,7 @@ function App() {
     } else {
       insertPromptByCreatedAt(target, moved);
     }
-    if (await persist(next, `已移动到「${targetType} / ${targetCategory}」`)) setMoveLocation(null);
+    if (await persist(next, `已移动到「${targetType} / ${targetCategory}」`)) closeMoveDialog();
   };
 
   const copyPrompt = async (prompt: PromptItem) => {
@@ -1306,7 +1406,7 @@ function App() {
                   }}
                   onDoubleClick={() => {
                     setActiveTabId(tab.id);
-                    setEntityDialog({ mode: "rename-tab", initial: label });
+                    openEntityDialog({ mode: "rename-tab", initial: label }, tab.id);
                   }}
                   onMouseDown={(event) => {
                     if (event.button !== 1) return;
@@ -1345,7 +1445,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><img src={appIconUrl} alt="" /></div>
-          <div><strong>PromptHelper</strong><span>提示词工作台 · V5.1</span></div>
+          <div><strong>PromptHelper</strong><span>提示词工作台 · V5.2</span></div>
         </div>
 
         <div className="library-overview">
@@ -1357,7 +1457,7 @@ function App() {
 
         <section className="sidebar-section library-tree-section">
           <header><span>资料库</span><div className="section-actions">
-            <button onClick={() => setEntityDialog({ mode: "add-type" })} title="新增类型"><Plus size={16} /></button>
+            <button onClick={() => openEntityDialog({ mode: "add-type" })} title="新增类型"><Plus size={16} /></button>
           </div></header>
           <div className="tree-nav">
             {types.map((typeName) => {
@@ -1459,8 +1559,8 @@ function App() {
                     aria-expanded={typeActionsOpen}
                   ><Ellipsis size={15} /></button>
                   <div className={`tree-row-actions ${typeActionsOpen ? "open" : ""}`}>
-                    <button onClick={() => setEntityDialog({ mode: "add-category", typeName })} title="新增分类"><Plus size={13} /></button>
-                    <button onClick={() => setEntityDialog({ mode: "rename-type", initial: typeName, typeName })} title="重命名类型"><Pencil size={13} /></button>
+                    <button onClick={() => openEntityDialog({ mode: "add-category", typeName })} title="新增分类"><Plus size={13} /></button>
+                    <button onClick={() => openEntityDialog({ mode: "rename-type", initial: typeName, typeName })} title="重命名类型"><Pencil size={13} /></button>
                     <button className="danger" onClick={() => deleteType(typeName)} title="删除类型"><Trash2 size={13} /></button>
                   </div>
                 </div>
@@ -1561,16 +1661,16 @@ function App() {
                         aria-expanded={categoryActionsOpen}
                       ><Ellipsis size={14} /></button>
                       <div className={`tree-row-actions category-actions ${categoryActionsOpen ? "open" : ""}`}>
-                        <button onClick={() => setEntityDialog({ mode: "rename-category", initial: categoryName, typeName, categoryName })} title="重命名分类"><Pencil size={12} /></button>
+                        <button onClick={() => openEntityDialog({ mode: "rename-category", initial: categoryName, typeName, categoryName })} title="重命名分类"><Pencil size={12} /></button>
                         <button className="danger" onClick={() => deleteCategory(typeName, categoryName)} title="删除分类"><Trash2 size={12} /></button>
                       </div>
                     </div>;
                   })}
-                  {!categories.length && <button className="tree-empty-action" onClick={() => setEntityDialog({ mode: "add-category", typeName })}><Plus size={13} />新增第一个分类</button>}
+                  {!categories.length && <button className="tree-empty-action" onClick={() => openEntityDialog({ mode: "add-category", typeName })}><Plus size={13} />新增第一个分类</button>}
                 </div>}
               </div>;
             })}
-            {!types.length && <div className="sidebar-empty">还没有类型<br /><button onClick={() => setEntityDialog({ mode: "add-type" })}>创建第一个类型</button></div>}
+            {!types.length && <div className="sidebar-empty">还没有类型<br /><button onClick={() => openEntityDialog({ mode: "add-type" })}>创建第一个类型</button></div>}
           </div>
         </section>
 
@@ -1598,7 +1698,7 @@ function App() {
               {activeTab.search && <button onClick={() => patchTab(activeTab.id, { search: "" })}><X size={15} /></button>}
               <kbd>Ctrl F</kbd>
             </div>
-            <button className="primary-button" disabled={!activeTab.categoryName || Boolean(activeTab.search)} onClick={() => setPromptDialog({ mode: "add" })}><Plus size={17} />添加内容</button>
+            <button className="primary-button" disabled={!activeTab.categoryName || Boolean(activeTab.search)} onClick={() => openPromptDialog({ mode: "add" })}><Plus size={17} />添加内容</button>
           </div>
         </header>
 
@@ -1718,7 +1818,7 @@ function App() {
                   </div>
                   <div className="prompt-actions">
                     <div className={`prompt-default-actions ${promptActionsOpen ? "open" : ""}`}>
-                      <button onClick={() => setPromptViewer(location)} title="查看完整内容" aria-label="查看完整内容"><Eye size={16} /></button>
+                      <button onClick={() => openPromptViewer(location)} title="查看完整内容" aria-label="查看完整内容"><Eye size={16} /></button>
                       <button
                         onClick={(event) => {
                           event.stopPropagation();
@@ -1730,11 +1830,11 @@ function App() {
                       ><Ellipsis size={17} /></button>
                     </div>
                     <div className={`prompt-row-actions ${promptActionsOpen ? "open" : ""}`}>
-                      <button onClick={() => { setPromptViewer(location); setPromptActionMenuKey(null); }} title="查看完整内容"><Eye size={16} /></button>
-                      <button onClick={() => { setPromptDialog({ mode: "edit", location }); setPromptActionMenuKey(null); }} title="编辑"><Pencil size={16} /></button>
+                      <button onClick={() => { openPromptViewer(location); setPromptActionMenuKey(null); }} title="查看完整内容"><Eye size={16} /></button>
+                      <button onClick={() => { openPromptDialog({ mode: "edit", location }); setPromptActionMenuKey(null); }} title="编辑"><Pencil size={16} /></button>
                       <button onClick={() => { void movePromptToTop(location); setPromptActionMenuKey(null); }} disabled={location.index === groupStartIndex} title={pinned ? "置顶到 Pin 分组第一位" : "置顶到普通分组第一位"}><ChevronsUp size={16} /></button>
                       <button className={pinned ? "pin-active" : ""} onClick={() => { void togglePromptPin(location); setPromptActionMenuKey(null); }} title={pinned ? "取消 Pin" : "Pin 到顶部"}><Pin size={16} /></button>
-                      <button onClick={() => { setMoveLocation(location); setPromptActionMenuKey(null); }} title="移动到"><FolderInput size={16} /></button>
+                      <button onClick={() => { openMoveDialog(location); setPromptActionMenuKey(null); }} title="移动到"><FolderInput size={16} /></button>
                       <button className="danger" onClick={() => { requestDeletePrompt(location); setPromptActionMenuKey(null); }} title="删除"><Trash2 size={16} /></button>
                     </div>
                   </div>
@@ -1754,7 +1854,7 @@ function App() {
                 : activeTab.typeName
                   ? "把常用提示词整理进来，之后一键即可复制。"
                   : types.length ? "从左侧选择一个类型，再进入需要的分类。" : "创建资料结构后，就可以开始整理提示词。"}</p>
-              {!activeTab.search && activeTab.categoryName && <button className="primary-button" onClick={() => setPromptDialog({ mode: "add" })}><Plus size={17} />添加第一条提示词</button>}
+              {!activeTab.search && activeTab.categoryName && <button className="primary-button" onClick={() => openPromptDialog({ mode: "add" })}><Plus size={17} />添加第一条提示词</button>}
             </div>
           )}
         </div>
@@ -1765,27 +1865,55 @@ function App() {
 
       {contextMenu && <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
         <button onClick={() => { copyPrompt(contextMenu.prompt); setContextMenu(null); }}><Copy size={15} />复制</button>
-        <button onClick={() => { setPromptDialog({ mode: "edit", location: contextMenu }); setContextMenu(null); }}><Pencil size={15} />编辑</button>
+        <button onClick={() => { openPromptDialog({ mode: "edit", location: contextMenu }); setContextMenu(null); }}><Pencil size={15} />编辑</button>
         <button onClick={() => { void movePromptToTop(contextMenu); setContextMenu(null); }}><ChevronsUp size={15} />置顶</button>
         <button onClick={() => { void togglePromptPin(contextMenu); setContextMenu(null); }}><Pin size={15} />{isPromptPinned(contextMenu.prompt) ? "取消 Pin" : "Pin 到顶部"}</button>
-        <button onClick={() => { setMoveLocation(contextMenu); setContextMenu(null); }}><FolderInput size={15} />移动到…</button>
+        <button onClick={() => { openMoveDialog(contextMenu); setContextMenu(null); }}><FolderInput size={15} />移动到…</button>
         <div />
         <button className="danger-text" onClick={() => { requestDeletePrompt(contextMenu); setContextMenu(null); }}><Trash2 size={15} />删除</button>
       </div>}
 
-      {entityDialog && <EntityModal dialog={entityDialog} onClose={() => setEntityDialog(null)} onSave={saveEntity} />}
-      {promptDialog && <PromptEditor dialog={promptDialog} onClose={() => setPromptDialog(null)} onSave={savePrompt} />}
+      {entityDialog && <EntityModal
+        dialog={entityDialog}
+        onChange={(value) => updateActiveTabModalState((current) => ({
+          ...current,
+          entityDialog: current.entityDialog ? { ...current.entityDialog, value } : current.entityDialog,
+        }))}
+        onClose={closeEntityDialog}
+        onSave={saveEntity}
+      />}
+      {promptDialog && <PromptEditor
+        dialog={promptDialog}
+        onChange={(patch) => updateActiveTabModalState((current) => ({
+          ...current,
+          promptDialog: current.promptDialog ? { ...current.promptDialog, ...patch } : current.promptDialog,
+        }))}
+        onClose={closePromptDialog}
+        onSave={savePrompt}
+      />}
       {promptViewer && <PromptViewer
         location={promptViewer}
-        onClose={() => setPromptViewer(null)}
+        onClose={closePromptViewer}
         onCopy={() => { void copyPrompt(promptViewer.prompt); }}
         onEdit={() => {
-          setPromptDialog({ mode: "edit", location: promptViewer });
-          setPromptViewer(null);
+          updateActiveTabModalState((current) => ({
+            ...current,
+            promptDialog: createPromptDialogState({ mode: "edit", location: promptViewer }),
+            promptViewer: null,
+          }));
         }}
       />}
-      {confirmation && <ConfirmModal confirmation={confirmation} onClose={() => setConfirmation(null)} />}
-      {moveLocation && <MoveModal data={data} source={moveLocation} onClose={() => setMoveLocation(null)} onMove={movePrompt} />}
+      {confirmation && <ConfirmModal confirmation={confirmation} onClose={closeConfirmation} />}
+      {moveDialog && <MoveModal
+        data={data}
+        dialog={moveDialog}
+        onChange={(patch) => updateActiveTabModalState((current) => ({
+          ...current,
+          moveDialog: current.moveDialog ? { ...current.moveDialog, ...patch } : current.moveDialog,
+        }))}
+        onClose={closeMoveDialog}
+        onMove={movePrompt}
+      />}
       {importDraft && <ImportModal onClose={() => setImportDraft(null)} onApply={applyImport} />}
       {securityMode && <SecurityModal mode={securityMode} encrypted={Boolean(password)} onMode={setSecurityMode} onClose={() => setSecurityMode(null)} onApply={applySecurity} />}
       {settingsOpen && <SettingsModal fontSize={fontSize} theme={theme} onFontSize={setFontSize} onTheme={setTheme} onClose={() => setSettingsOpen(false)} />}
@@ -1793,8 +1921,17 @@ function App() {
   );
 }
 
-function EntityModal({ dialog, onClose, onSave }: { dialog: EntityDialog; onClose: () => void; onSave: (value: string) => void }) {
-  const [value, setValue] = useState(dialog.initial || "");
+function EntityModal({
+  dialog,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  dialog: EntityDialogState;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSave: (value: string) => void;
+}) {
   const labels = {
     "add-type": ["新增类型", "给一组相关分类起一个清晰的名字"],
     "rename-type": ["重命名类型", "该类型下的所有内容都会保留"],
@@ -1803,25 +1940,32 @@ function EntityModal({ dialog, onClose, onSave }: { dialog: EntityDialog; onClos
     "rename-tab": ["重命名标签", "自定义名称只影响当前工作标签"],
   }[dialog.mode];
   return <Modal title={labels[0]} subtitle={labels[1]} onClose={onClose} icon={<Pencil size={18} />}>
-    <form onSubmit={(event) => { event.preventDefault(); onSave(value); }}>
+    <form onSubmit={(event) => { event.preventDefault(); onSave(dialog.value); }}>
       <label className="field-label">名称</label>
-      <input className="text-input" autoFocus value={value} onChange={(event) => setValue(event.target.value)} placeholder="请输入名称" />
-      <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!value.trim()}>保存</button></div>
+      <input className="text-input" autoFocus value={dialog.value} onChange={(event) => onChange(event.target.value)} placeholder="请输入名称" />
+      <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!dialog.value.trim()}>保存</button></div>
     </form>
   </Modal>;
 }
 
-function PromptEditor({ dialog, onClose, onSave }: { dialog: PromptDialog; onClose: () => void; onSave: (title: string, content: string) => void }) {
+function PromptEditor({
+  dialog,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  dialog: PromptDialogState;
+  onChange: (patch: Partial<Pick<PromptDialogState, "title" | "content" | "discardConfirmOpen">>) => void;
+  onClose: () => void;
+  onSave: (title: string, content: string) => void;
+}) {
   const source = dialog.mode === "edit" ? dialog.location?.prompt : undefined;
   const initialTitle = source ? promptTitle(source) : "";
   const initialContent = source ? promptContent(source) : "";
-  const [title, setTitle] = useState(initialTitle);
-  const [content, setContent] = useState(initialContent);
-  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
-  const isDirty = title !== initialTitle || content !== initialContent;
+  const isDirty = dialog.title !== initialTitle || dialog.content !== initialContent;
   const requestClose = () => {
     if (isDirty) {
-      setDiscardConfirmOpen(true);
+      onChange({ discardConfirmOpen: true });
       return;
     }
     onClose();
@@ -1829,29 +1973,29 @@ function PromptEditor({ dialog, onClose, onSave }: { dialog: PromptDialog; onClo
 
   return <>
     <Modal wide title={dialog.mode === "add" ? "添加提示词" : "编辑提示词"} subtitle="标题可选；复制时只会复制正文内容" onClose={requestClose} icon={<FileText size={19} />}>
-      <form onSubmit={(event) => { event.preventDefault(); onSave(title, content); }}>
+      <form onSubmit={(event) => { event.preventDefault(); onSave(dialog.title, dialog.content); }}>
         <label className="field-label">标题 <span>可选</span></label>
-        <input className="text-input" autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：电影感人物特写" />
+        <input className="text-input" autoFocus value={dialog.title} onChange={(event) => onChange({ title: event.target.value })} placeholder="例如：电影感人物特写" />
         <label className="field-label field-spaced">提示词内容</label>
         <textarea
           className="text-area prompt-editor-area"
-          value={content}
-          onChange={(event) => setContent(event.target.value)}
+          value={dialog.content}
+          onChange={(event) => onChange({ content: event.target.value })}
           onKeyDown={(event) => {
             if ((event.ctrlKey && event.key === "Enter") || (event.ctrlKey && event.key.toLowerCase() === "s")) {
               event.preventDefault();
-              if (title.trim() || content.trim()) onSave(title, content);
+              if (dialog.title.trim() || dialog.content.trim()) onSave(dialog.title, dialog.content);
             }
           }}
           placeholder="输入完整提示词…"
         />
-        <div className="editor-meta"><span>{content.length} 字符</span><span>Ctrl + Enter 保存</span></div>
-        <div className="modal-actions"><button type="button" className="secondary-button" onClick={requestClose}>取消</button><button className="primary-button" disabled={!title.trim() && !content.trim()}><Check size={16} />保存</button></div>
+        <div className="editor-meta"><span>{dialog.content.length} 字符</span><span>Ctrl + Enter 保存</span></div>
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={requestClose}>取消</button><button className="primary-button" disabled={!dialog.title.trim() && !dialog.content.trim()}><Check size={16} />保存</button></div>
       </form>
     </Modal>
-    {discardConfirmOpen && <Modal title="放弃未保存的更改？" subtitle="当前编辑内容尚未保存" onClose={() => setDiscardConfirmOpen(false)} icon={<TriangleAlert size={18} />}>
+    {dialog.discardConfirmOpen && <Modal title="放弃未保存的更改？" subtitle="当前编辑内容尚未保存" onClose={() => onChange({ discardConfirmOpen: false })} icon={<TriangleAlert size={18} />}>
       <p className="confirm-copy">标题或提示词内容已经更改。关闭后，这些更改将无法恢复。</p>
-      <div className="modal-actions"><button className="secondary-button" onClick={() => setDiscardConfirmOpen(false)}>继续编辑</button><button className="danger-button" onClick={onClose}>不保存并关闭</button></div>
+      <div className="modal-actions"><button className="secondary-button" onClick={() => onChange({ discardConfirmOpen: false })}>继续编辑</button><button className="danger-button" onClick={onClose}>不保存并关闭</button></div>
     </Modal>}
   </>;
 }
@@ -1881,17 +2025,28 @@ function ConfirmModal({ confirmation, onClose }: { confirmation: Confirmation; o
   </Modal>;
 }
 
-function MoveModal({ data, source, onClose, onMove }: { data: PromptData; source: PromptLocation; onClose: () => void; onMove: (typeName: string, categoryName: string) => void }) {
+function MoveModal({
+  data,
+  dialog,
+  onChange,
+  onClose,
+  onMove,
+}: {
+  data: PromptData;
+  dialog: MoveDialogState;
+  onChange: (patch: Partial<Pick<MoveDialogState, "expandedTypeName" | "selected">>) => void;
+  onClose: () => void;
+  onMove: (typeName: string, categoryName: string) => void;
+}) {
+  const source = dialog.location;
   const types = getTypes(data);
   const destinationCount = types.reduce((total, typeName) => (
     total + getCategoryNames(data, typeName).filter((categoryName) => (
       typeName !== source.typeName || categoryName !== source.categoryName
     )).length
   ), 0);
-  const [expandedTypeName, setExpandedTypeName] = useState("");
-  const [selected, setSelected] = useState("");
-  const [selectedTypeName, selectedCategoryName] = selected
-    ? selected.split("\u0000")
+  const [selectedTypeName, selectedCategoryName] = dialog.selected
+    ? dialog.selected.split("\u0000")
     : ["", ""];
 
   return <Modal wide title="移动提示词" subtitle={`当前位置：${source.typeName} / ${source.categoryName}`} onClose={onClose} icon={<FolderInput size={18} />}>
@@ -1899,12 +2054,12 @@ function MoveModal({ data, source, onClose, onMove }: { data: PromptData; source
     <div className="move-tree">
       {types.map((typeName) => {
         const categories = getCategoryNames(data, typeName);
-        const expanded = expandedTypeName === typeName;
+        const expanded = dialog.expandedTypeName === typeName;
         const containsSelection = selectedTypeName === typeName;
         return <div className={`move-tree-group ${expanded ? "expanded" : ""}`} key={typeName}>
           <button
             className={`move-tree-type ${containsSelection ? "contains-selection" : ""}`}
-            onClick={() => setExpandedTypeName((current) => current === typeName ? "" : typeName)}
+            onClick={() => onChange({ expandedTypeName: dialog.expandedTypeName === typeName ? "" : typeName })}
             aria-expanded={expanded}
           >
             <ChevronRight size={15} />
@@ -1916,13 +2071,13 @@ function MoveModal({ data, source, onClose, onMove }: { data: PromptData; source
             {categories.map((categoryName) => {
               const current = typeName === source.typeName && categoryName === source.categoryName;
               const value = `${typeName}\u0000${categoryName}`;
-              const selectedTarget = selected === value;
+              const selectedTarget = dialog.selected === value;
               const promptCount = getCategories(data, typeName)[categoryName].length;
               return <button
                 className={`move-tree-category ${current ? "current" : ""} ${selectedTarget ? "selected" : ""}`}
                 key={categoryName}
                 disabled={current}
-                onClick={() => setSelected(value)}
+                onClick={() => onChange({ selected: value })}
               >
                 <Folder size={15} />
                 <span>{categoryName}</span>
@@ -1936,13 +2091,13 @@ function MoveModal({ data, source, onClose, onMove }: { data: PromptData; source
       {!types.length && <div className="move-tree-empty move-tree-empty-root">资料库中还没有可用分类</div>}
     </div>
 
-    <div className={`move-target-summary ${selected ? "ready" : ""}`}>
+    <div className={`move-target-summary ${dialog.selected ? "ready" : ""}`}>
       <div><FolderInput size={17} /></div>
-      <span>{selected ? "将移动到" : "尚未选择目标分类"}</span>
-      {selected && <strong>{selectedTypeName}<ChevronRight size={13} />{selectedCategoryName}</strong>}
+      <span>{dialog.selected ? "将移动到" : "尚未选择目标分类"}</span>
+      {dialog.selected && <strong>{selectedTypeName}<ChevronRight size={13} />{selectedCategoryName}</strong>}
     </div>
     {!destinationCount && <p className="form-error move-tree-error">请先在资料库中创建另一个分类。</p>}
-    <div className="modal-actions"><button className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!selected} onClick={() => onMove(selectedTypeName, selectedCategoryName)}><FolderInput size={16} />确认移动</button></div>
+    <div className="modal-actions"><button className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!dialog.selected} onClick={() => onMove(selectedTypeName, selectedCategoryName)}><FolderInput size={16} />确认移动</button></div>
   </Modal>;
 }
 
