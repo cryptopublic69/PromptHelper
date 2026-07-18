@@ -299,6 +299,10 @@ html.tab-pointer-dragging, html.tab-pointer-dragging * { cursor: grabbing !impor
 .modal-backdrop { position: fixed; left: 0; right: 0; top: var(--top-bar-height); bottom: 0; z-index: 200; display: grid; place-items: center; padding: 18px 20px; background: rgba(3,7,12,.68); backdrop-filter: blur(7px); }
 .modal { width: min(430px, 100%); max-height: calc(100vh - var(--top-bar-height) - 36px); overflow: auto; border-radius: 18px; border: 1px solid var(--line-strong); background: linear-gradient(160deg, #172232, #111a27); box-shadow: 0 30px 100px rgba(0,0,0,.55); animation: modal-in .2s ease-out; }
 .modal-wide { width: min(650px, 100%); }
+.prompt-editor-modal { height: min(640px, calc(100vh - var(--top-bar-height) - 36px)); overflow: hidden; display: flex; flex-direction: column; }
+.prompt-editor-modal .modal-header { flex: none; }
+.prompt-editor-modal .modal-body { flex: 1; min-height: 0; display: flex; }
+.prompt-editor-form { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(8px) scale(.985); } }
 .modal-header { display: grid; grid-template-columns: 36px minmax(0, 1fr) 30px; align-items: center; gap: 10px; padding: 16px 18px 13px; border-bottom: 1px solid var(--line); }
 .modal-heading-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 11px; color: #aab3ff; background: var(--accent-soft); }
@@ -309,7 +313,7 @@ html.tab-pointer-dragging, html.tab-pointer-dragging * { cursor: grabbing !impor
 .text-input, .text-area { width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; background: rgba(8,13,21,.62); color: var(--text); outline: 0; transition: border-color .16s, box-shadow .16s, background-color .16s; }
 .text-input { height: 41px; padding: 0 12px; font-size: .6875rem; }
 .text-area { min-height: 220px; resize: vertical; padding: 12px; line-height: 1.65; font-size: .6875rem; }
-.prompt-editor-area { height: min(342px, calc(100vh - var(--top-bar-height) - 290px)); }
+.prompt-editor-area { flex: 1; min-height: 0; height: auto; }
 .prompt-editor-area::-webkit-scrollbar-corner,
 .prompt-viewer-content::-webkit-scrollbar-corner,
 .prompt-viewer-content::-webkit-resizer,

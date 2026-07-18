@@ -264,6 +264,7 @@ function Modal({
   children,
   onClose,
   wide = false,
+  className = "",
 }: {
   title: string;
   subtitle?: string;
@@ -271,6 +272,7 @@ function Modal({
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  className?: string;
 }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -283,7 +285,7 @@ function Modal({
   return (
     <div className="modal-backdrop">
       <section
-        className={`modal ${wide ? "modal-wide" : ""}`}
+        className={`modal ${wide ? "modal-wide" : ""} ${className || ""}`}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="modal-header">
@@ -2217,8 +2219,8 @@ function PromptEditor({
   };
 
   return <>
-    <Modal wide title={dialog.mode === "add" ? "添加提示词" : "编辑提示词"} subtitle="标题可选；复制时只会复制正文内容" onClose={requestClose} icon={<FileText size={19} />}>
-      <form onSubmit={(event) => { event.preventDefault(); onSave(dialog.title, dialog.content); }}>
+    <Modal wide className="prompt-editor-modal" title={dialog.mode === "add" ? "添加提示词" : "编辑提示词"} subtitle="标题可选；复制时只会复制正文内容" onClose={requestClose} icon={<FileText size={19} />}>
+      <form className="prompt-editor-form" onSubmit={(event) => { event.preventDefault(); onSave(dialog.title, dialog.content); }}>
         <label className="field-label">标题 <span>可选</span></label>
         <input className="text-input" autoFocus value={dialog.title} onChange={(event) => onChange({ title: event.target.value })} placeholder="例如：电影感人物特写" />
         <label className="field-label field-spaced">提示词内容</label>
@@ -2256,8 +2258,8 @@ function PromptViewer({ location, onClose, onCopy, onEdit }: { location: PromptL
   useLayoutEffect(() => {
     const element = contentRef.current;
     if (!element) return;
-    const initialMaxHeight = Math.max(150, Math.min(520, window.innerHeight - 240));
-    if (element.scrollHeight > initialMaxHeight) element.style.height = `${initialMaxHeight}px`;
+    const initialMaxHeight = Math.max(150, Math.min(460, window.innerHeight - 300));
+    element.style.height = element.scrollHeight > initialMaxHeight ? `${initialMaxHeight}px` : "";
   }, [content]);
   return <Modal wide title={title || "提示词详情"} subtitle={`${location.typeName} / ${location.categoryName}`} onClose={onClose} icon={<Eye size={19} />}>
     <div ref={contentRef} className="prompt-viewer-content">{content || <span>（无正文）</span>}</div>
