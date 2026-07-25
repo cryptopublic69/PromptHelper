@@ -427,6 +427,8 @@ function App() {
   const [categoryDropTarget, setCategoryDropTarget] = useState<{ typeName: string; categoryName: string; position: "before" | "after" } | null>(null);
   const [dragPromptIndex, setDragPromptIndex] = useState<number | null>(null);
   const [promptDropTarget, setPromptDropTarget] = useState<{ index: number; position: "before" | "after" } | null>(null);
+  const [promptDirectoryDropTarget, setPromptDirectoryDropTarget] = useState<{ typeName: string; categoryName: string } | null>(null);
+  const [promptTypeHoverTarget, setPromptTypeHoverTarget] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const tabsScrollRef = useRef<HTMLDivElement>(null);
   const tabsScrollTargetRef = useRef(0);
@@ -469,6 +471,8 @@ function App() {
     startY: number;
     active: boolean;
   } | null>(null);
+  const promptTypeHoverRef = useRef<string | null>(null);
+  const promptTypeExpandTimerRef = useRef<number | null>(null);
 
   tabsRef.current = tabs;
   activeTabIdRef.current = activeTabId;
@@ -693,6 +697,12 @@ function App() {
   useEffect(() => () => {
     if (tabsScrollFrameRef.current !== null) {
       window.cancelAnimationFrame(tabsScrollFrameRef.current);
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (promptTypeExpandTimerRef.current !== null) {
+      window.clearTimeout(promptTypeExpandTimerRef.current);
     }
   }, []);
 
@@ -1420,11 +1430,63 @@ function App() {
     };
   };
 
+  const resolvePromptDirectoryDropTarget = (
+    sourceTypeName: string,
+    sourceCategoryName: string,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const row = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>(".tree-category-row[data-type-name][data-category-name]");
+    const targetTypeName = row?.dataset.typeName;
+    const targetCategoryName = row?.dataset.categoryName;
+    if (!row || !targetTypeName || !targetCategoryName) return null;
+    if (targetTypeName === sourceTypeName && targetCategoryName === sourceCategoryName) return null;
+    if (!getCategories(data, targetTypeName)[targetCategoryName]) return null;
+    return { typeName: targetTypeName, categoryName: targetCategoryName };
+  };
+
+  const clearPromptTypeHover = () => {
+    promptTypeHoverRef.current = null;
+    setPromptTypeHoverTarget(null);
+    if (promptTypeExpandTimerRef.current !== null) {
+      window.clearTimeout(promptTypeExpandTimerRef.current);
+      promptTypeExpandTimerRef.current = null;
+    }
+  };
+
+  const updatePromptTypeHover = (clientX: number, clientY: number) => {
+    const row = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>(".tree-type-row");
+    const group = row?.closest<HTMLElement>(".tree-type-group[data-type-name]");
+    const typeName = group?.dataset.typeName || null;
+    const currentTab = tabsRef.current.find((tab) => tab.id === activeTabIdRef.current);
+    const expandableTypeName = typeName
+      && currentTab?.expandedTypeName !== typeName
+      && getCategoryNames(data, typeName).length
+      ? typeName
+      : null;
+
+    if (promptTypeHoverRef.current === expandableTypeName) return;
+    clearPromptTypeHover();
+    if (!expandableTypeName || !currentTab) return;
+
+    promptTypeHoverRef.current = expandableTypeName;
+    setPromptTypeHoverTarget(expandableTypeName);
+    promptTypeExpandTimerRef.current = window.setTimeout(() => {
+      if (promptTypeHoverRef.current !== expandableTypeName) return;
+      patchTab(currentTab.id, { expandedTypeName: expandableTypeName });
+      promptTypeExpandTimerRef.current = null;
+    }, 420);
+  };
+
   const clearPromptPointerDrag = () => {
     promptPointerDragRef.current = null;
     document.documentElement.classList.remove("type-pointer-dragging");
     setDragPromptIndex(null);
     setPromptDropTarget(null);
+    setPromptDirectoryDropTarget(null);
+    clearPromptTypeHover();
   };
 
   const moveDraggedPrompt = async (
@@ -1448,6 +1510,30 @@ function App() {
     await persist(next, "提示词顺序已更新");
   };
 
+  const movePromptBetweenCategories = async (
+    sourceTypeName: string,
+    sourceCategoryName: string,
+    sourceIndex: number,
+    targetTypeName: string,
+    targetCategoryName: string,
+  ) => {
+    if (sourceTypeName === targetTypeName && sourceCategoryName === targetCategoryName) return false;
+
+    const next = cloneData(data);
+    const source = getCategories(next, sourceTypeName)[sourceCategoryName];
+    const target = getCategories(next, targetTypeName)[targetCategoryName];
+    if (!source || !target || !source[sourceIndex]) return false;
+
+    const [moved] = source.splice(sourceIndex, 1);
+    if (isPromptPinned(moved)) {
+      const firstUnpinnedIndex = target.findIndex((prompt) => !isPromptPinned(prompt));
+      target.splice(firstUnpinnedIndex < 0 ? target.length : firstUnpinnedIndex, 0, moved);
+    } else {
+      insertPromptByCreatedAt(target, moved);
+    }
+    return persist(next, `已移动到「${targetTypeName} / ${targetCategoryName}」`);
+  };
+
   const requestDeletePrompt = (location: PromptLocation) => openConfirmation({
     title: "删除这条提示词？",
     message: promptTitle(location.prompt) || promptContent(location.prompt).slice(0, 72),
@@ -1458,17 +1544,13 @@ function App() {
 
   const movePrompt = async (targetType: string, targetCategory: string) => {
     if (!moveLocation) return;
-    const next = cloneData(data);
-    const source = getCategories(next, moveLocation.typeName)[moveLocation.categoryName];
-    const [moved] = source.splice(moveLocation.index, 1);
-    const target = getCategories(next, targetType)[targetCategory];
-    if (isPromptPinned(moved)) {
-      const firstUnpinnedIndex = target.findIndex((prompt) => !isPromptPinned(prompt));
-      target.splice(firstUnpinnedIndex < 0 ? target.length : firstUnpinnedIndex, 0, moved);
-    } else {
-      insertPromptByCreatedAt(target, moved);
-    }
-    if (await persist(next, `已移动到「${targetType} / ${targetCategory}」`)) closeMoveDialog();
+    if (await movePromptBetweenCategories(
+      moveLocation.typeName,
+      moveLocation.categoryName,
+      moveLocation.index,
+      targetType,
+      targetCategory,
+    )) closeMoveDialog();
   };
 
   const copyPrompt = async (prompt: PromptItem) => {
@@ -1676,7 +1758,7 @@ function App() {
                 data-type-name={typeName}
               >
                 <div
-                  className={`tree-type-row ${expanded ? "expanded" : ""} ${containsActive ? "contains-active" : ""} ${typeActionsOpen ? "actions-open" : ""} ${dragTypeName === typeName ? "dragging" : ""} ${typeDropTarget?.typeName === typeName ? `drop-${typeDropTarget.position}` : ""}`}
+                  className={`tree-type-row ${expanded ? "expanded" : ""} ${containsActive ? "contains-active" : ""} ${typeActionsOpen ? "actions-open" : ""} ${dragTypeName === typeName ? "dragging" : ""} ${typeDropTarget?.typeName === typeName ? `drop-${typeDropTarget.position}` : ""} ${promptTypeHoverTarget === typeName ? "prompt-hover-target" : ""}`}
                   onMouseEnter={() => setTreeActionMenuKey((current) => (
                     current && current !== typeActionsKey ? null : current
                   ))}
@@ -1774,8 +1856,10 @@ function App() {
                     const categoryActionsOpen = treeActionMenuKey === categoryActionsKey;
                     const categoryDragging = dragCategory?.typeName === typeName && dragCategory.categoryName === categoryName;
                     const categoryTarget = categoryDropTarget?.typeName === typeName && categoryDropTarget.categoryName === categoryName;
+                    const promptDirectoryTarget = promptDirectoryDropTarget?.typeName === typeName
+                      && promptDirectoryDropTarget.categoryName === categoryName;
                     return <div
-                      className={`tree-category-row ${active ? "active" : ""} ${categoryActionsOpen ? "actions-open" : ""} ${categoryDragging ? "dragging" : ""} ${categoryTarget ? `drop-${categoryDropTarget.position}` : ""}`}
+                      className={`tree-category-row ${active ? "active" : ""} ${categoryActionsOpen ? "actions-open" : ""} ${categoryDragging ? "dragging" : ""} ${categoryTarget ? `drop-${categoryDropTarget.position}` : ""} ${promptDirectoryTarget ? "prompt-drop-target" : ""}`}
                       key={categoryName}
                       data-type-name={typeName}
                       data-category-name={categoryName}
@@ -1916,6 +2000,7 @@ function App() {
                 const locationPrompts = getCategories(data, location.typeName)[location.categoryName] || [];
                 const firstUnpinnedIndex = locationPrompts.findIndex((prompt) => !isPromptPinned(prompt));
                 const groupStartIndex = pinned ? 0 : firstUnpinnedIndex < 0 ? locationPrompts.length : firstUnpinnedIndex;
+                const draggable = !global && !busy;
                 const sortable = !global && !busy && locationPrompts.filter((prompt) => isPromptPinned(prompt) === pinned).length > 1;
                 const promptActionsKey = `prompt:${location.typeName}\u0000${location.categoryName}\u0000${location.index}`;
                 const promptActionsOpen = promptActionMenuKey === promptActionsKey;
@@ -1924,7 +2009,7 @@ function App() {
                   ? promptDropTarget.position
                   : null;
                 return <article
-                  className={`prompt-card ${global ? "search-result" : ""} ${pinned ? "pinned" : ""} ${sortable ? "sortable" : ""} ${dragging ? "dragging" : ""} ${dropPosition ? `drop-${dropPosition}` : ""}`}
+                  className={`prompt-card ${global ? "search-result" : ""} ${pinned ? "pinned" : ""} ${draggable ? "draggable" : ""} ${sortable ? "sortable" : ""} ${dragging ? "dragging" : ""} ${dropPosition ? `drop-${dropPosition}` : ""}`}
                   key={`${location.typeName}-${location.categoryName}-${location.index}-${content.slice(0, 24)}`}
                   data-prompt-index={location.index}
                   data-prompt-pinned={pinned}
@@ -1940,7 +2025,7 @@ function App() {
                     <div
                       className="prompt-drag-handle"
                       onPointerDown={(event) => {
-                        if (!sortable || !event.isPrimary || event.button !== 0) return;
+                        if (!draggable || !event.isPrimary || event.button !== 0) return;
                         event.preventDefault();
                         event.stopPropagation();
                         promptPointerDragRef.current = {
@@ -1956,6 +2041,8 @@ function App() {
                         event.currentTarget.setPointerCapture(event.pointerId);
                         document.documentElement.classList.add("type-pointer-dragging");
                         setPromptDropTarget(null);
+                        setPromptDirectoryDropTarget(null);
+                        clearPromptTypeHover();
                       }}
                       onPointerMove={(event) => {
                         const drag = promptPointerDragRef.current;
@@ -1967,7 +2054,26 @@ function App() {
                         }
                         event.preventDefault();
                         event.stopPropagation();
-                        const target = resolvePromptDropTarget(drag.sourceIndex, drag.sourcePinned, event.clientX, event.clientY);
+                        const directoryTarget = resolvePromptDirectoryDropTarget(
+                          drag.typeName,
+                          drag.categoryName,
+                          event.clientX,
+                          event.clientY,
+                        );
+                        setPromptDirectoryDropTarget((current) => (
+                          current?.typeName === directoryTarget?.typeName
+                            && current?.categoryName === directoryTarget?.categoryName
+                            ? current
+                            : directoryTarget
+                        ));
+                        if (directoryTarget) {
+                          clearPromptTypeHover();
+                        } else {
+                          updatePromptTypeHover(event.clientX, event.clientY);
+                        }
+                        const target = directoryTarget
+                          ? null
+                          : resolvePromptDropTarget(drag.sourceIndex, drag.sourcePinned, event.clientX, event.clientY);
                         setPromptDropTarget((current) => (
                           current?.index === target?.index && current?.position === target?.position
                             ? current
@@ -1977,7 +2083,15 @@ function App() {
                       onPointerUp={(event) => {
                         const drag = promptPointerDragRef.current;
                         if (!drag || drag.pointerId !== event.pointerId) return;
-                        const target = drag.active
+                        const directoryTarget = drag.active
+                          ? resolvePromptDirectoryDropTarget(
+                            drag.typeName,
+                            drag.categoryName,
+                            event.clientX,
+                            event.clientY,
+                          )
+                          : null;
+                        const target = drag.active && !directoryTarget
                           ? resolvePromptDropTarget(drag.sourceIndex, drag.sourcePinned, event.clientX, event.clientY)
                           : null;
                         if (drag.active) {
@@ -1988,7 +2102,15 @@ function App() {
                           event.currentTarget.releasePointerCapture(event.pointerId);
                         }
                         clearPromptPointerDrag();
-                        if (target) {
+                        if (directoryTarget) {
+                          void movePromptBetweenCategories(
+                            drag.typeName,
+                            drag.categoryName,
+                            drag.sourceIndex,
+                            directoryTarget.typeName,
+                            directoryTarget.categoryName,
+                          );
+                        } else if (target) {
                           void moveDraggedPrompt(
                             drag.typeName,
                             drag.categoryName,
@@ -2005,8 +2127,8 @@ function App() {
                         }
                         clearPromptPointerDrag();
                       }}
-                      title="拖动排序"
-                      aria-label={`拖动第 ${displayIndex + 1} 条提示词排序`}
+                      title="拖动排序或移动到左侧目录"
+                      aria-label={`拖动第 ${displayIndex + 1} 条提示词排序或移动目录`}
                     >
                       <GripVertical size={14} />
                     </div>

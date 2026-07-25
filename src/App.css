@@ -161,6 +161,7 @@ html.type-pointer-dragging, html.type-pointer-dragging * { cursor: grabbing !imp
 .tree-type-row.contains-active .tree-type-main { color: #e3e9f3; }
 .tree-type-row.contains-active .tree-type-main > svg:nth-of-type(2) { color: #98a6ff; }
 .tree-type-row.expanded .tree-type-main { background: linear-gradient(90deg, rgba(124,140,255,.2), rgba(124,140,255,.07)); box-shadow: inset 2px 0 #8594ff; }
+.tree-type-row.prompt-hover-target .tree-type-main { color: #eef0ff; background: rgba(124,140,255,.16); box-shadow: inset 0 0 0 1px rgba(137,152,255,.38), 0 0 12px rgba(124,140,255,.15); }
 .tree-chevron { color: #56677e; transition: transform .16s ease, color .16s ease; }
 .tree-type-row.expanded .tree-chevron { color: #8998ff; transform: rotate(90deg); }
 .tree-actions-trigger { position: absolute; z-index: 2; right: 5px; top: 6px; width: 24px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; background: #172231; color: #8390a3; opacity: 0; pointer-events: none; cursor: pointer; transform: scale(.92); transition: opacity .12s, transform .12s, color .12s, background .12s; }
@@ -182,6 +183,8 @@ html.type-pointer-dragging, html.type-pointer-dragging * { cursor: grabbing !imp
 .tree-category-row:hover .tree-category-main { color: #c8d2e1; background: rgba(255,255,255,.03); }
 .tree-category-row.active .tree-category-main { color: #f1f4ff; background: linear-gradient(90deg, rgba(124,140,255,.18), rgba(124,140,255,.07)); box-shadow: inset 2px 0 #8594ff; }
 .tree-category-row.active .tree-category-main svg { color: #9da8ff; }
+.tree-category-row.prompt-drop-target .tree-category-main { color: #f3f4ff; background: linear-gradient(90deg, rgba(124,140,255,.3), rgba(124,140,255,.12)); box-shadow: inset 0 0 0 1px rgba(157,168,255,.55), 0 0 15px rgba(124,140,255,.22); }
+.tree-category-row.prompt-drop-target .tree-category-main svg { color: #b7c0ff; }
 .category-trigger { top: 4px; }
 .category-actions { top: 3px; }
 .tree-empty-action { height: 30px; display: flex; align-items: center; gap: 6px; margin-left: 4px; border: 0; background: transparent; color: #65758b; font-size: .5625rem; cursor: pointer; }
@@ -247,7 +250,7 @@ html.tab-pointer-dragging, html.tab-pointer-dragging * { cursor: grabbing !impor
 .prompt-card { position: relative; min-height: 72px; display: grid; grid-template-columns: 34px 54px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px 10px 9px 7px; border: 1px solid var(--line); border-radius: 13px; background: linear-gradient(100deg, rgba(24,35,50,.88), rgba(19,29,42,.82)); transition: border .16s, background .16s, transform .16s, opacity .16s; }
 .prompt-card.search-result { grid-template-columns: 54px minmax(0, 1fr) auto; padding-left: 10px; }
 .prompt-card.pinned { border-color: rgba(124,140,255,.24); background: linear-gradient(100deg, rgba(36,44,68,.94), rgba(23,32,49,.88)); box-shadow: inset 3px 0 #8998ff; }
-.prompt-card.sortable .prompt-drag-handle { cursor: grab; user-select: none; touch-action: none; }
+.prompt-card.draggable .prompt-drag-handle { cursor: grab; user-select: none; touch-action: none; }
 .prompt-card:hover { border-color: rgba(124,140,255,.27); background: linear-gradient(100deg, rgba(29,42,60,.96), rgba(22,33,48,.94)); transform: translateY(-1px); }
 .prompt-card.dragging { opacity: .42; border-style: dashed; transform: none; }
 .prompt-card.drop-before::before, .prompt-card.drop-after::after { content: ""; position: absolute; z-index: 4; left: 10px; right: 10px; height: 2px; border-radius: 2px; background: #8998ff; box-shadow: 0 0 8px rgba(124,140,255,.7); pointer-events: none; }
@@ -440,6 +443,8 @@ html[data-theme="light"] .tree-type-row:hover .tree-type-main,
 html[data-theme="light"] .tree-category-row:hover .tree-category-main { color: #354256; background: rgba(37,50,70,.045); }
 html[data-theme="light"] .tree-type-row.contains-active .tree-type-main,
 html[data-theme="light"] .tree-category-row.active .tree-category-main { color: #202b3d; }
+html[data-theme="light"] .tree-type-row.prompt-hover-target .tree-type-main { color: #273247; background: rgba(102,118,232,.13); box-shadow: inset 0 0 0 1px rgba(102,118,232,.35), 0 0 12px rgba(102,118,232,.11); }
+html[data-theme="light"] .tree-category-row.prompt-drop-target .tree-category-main { color: #273247; background: linear-gradient(90deg, rgba(102,118,232,.2), rgba(102,118,232,.09)); box-shadow: inset 0 0 0 1px rgba(102,118,232,.42), 0 0 13px rgba(102,118,232,.13); }
 html[data-theme="light"] .tree-actions-trigger,
 html[data-theme="light"] .tree-row-actions,
 html[data-theme="light"] .prompt-row-actions { background: #f5f7fb; box-shadow: 0 7px 18px rgba(38,50,70,.13); }
