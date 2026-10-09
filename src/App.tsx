@@ -444,6 +444,7 @@ function App() {
   const workspaceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const dataSaveRef = useRef<Promise<void> | null>(null);
   const allowWindowCloseRef = useRef(false);
+  const exitRequestedRef = useRef(false);
   const tabPointerDragRef = useRef<{
     sourceTabId: string;
     pointerId: number;
@@ -495,16 +496,23 @@ function App() {
     });
   };
 
-  const destroyWindowAfterWorkspaceSave = async () => {
+  const finishWindowCloseAfterWorkspaceSave = async (action: "close" | "hide" = "close") => {
     try {
       await dataSaveRef.current;
       await saveWorkspaceStateBeforeClose();
+      if (isMacOS) {
+        if (action === "hide") {
+          if (!exitRequestedRef.current) await appWindow.hide();
+        }
+        else await api.exit();
+      } else {
+        allowWindowCloseRef.current = true;
+        await appWindow.destroy();
+      }
     } catch (error) {
+      if (action === "close") exitRequestedRef.current = false;
       setToast({ kind: "error", message: `关闭前保存失败：${errorMessage(error)}` });
-      return;
     }
-    allowWindowCloseRef.current = true;
-    await appWindow.destroy();
   };
 
   const focusDirtyPromptTabForWindowClose = (dirtyTabIds: string[]) => {
@@ -597,16 +605,18 @@ function App() {
   }, [tabs, activeTabId, phase]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    const unlisteners: (() => void)[] = [];
     let disposed = false;
-
-    void appWindow.onCloseRequested(async (event) => {
-      if (allowWindowCloseRef.current) return;
-      event.preventDefault();
-
+    const keepListener = (stopListening: () => void) => {
+      if (disposed) stopListening();
+      else unlisteners.push(stopListening);
+    };
+    const requestAppClose = async () => {
+      if (isMacOS) exitRequestedRef.current = true;
       try {
         await dataSaveRef.current;
       } catch (error) {
+        exitRequestedRef.current = false;
         setToast({ kind: "error", message: `资料库尚未保存：${errorMessage(error)}` });
         return;
       }
@@ -617,15 +627,22 @@ function App() {
         return;
       }
 
-      await destroyWindowAfterWorkspaceSave();
-    }).then((stopListening) => {
-      if (disposed) stopListening();
-      else unlisten = stopListening;
-    });
+      await finishWindowCloseAfterWorkspaceSave();
+    };
+
+    void appWindow.onCloseRequested(async (event) => {
+      if (allowWindowCloseRef.current) return;
+      event.preventDefault();
+      if (isMacOS) await finishWindowCloseAfterWorkspaceSave("hide");
+      else await requestAppClose();
+    }).then(keepListener);
+    if (isMacOS) {
+      void appWindow.listen("app-quit-requested", requestAppClose).then(keepListener);
+    }
 
     return () => {
       disposed = true;
-      unlisten?.();
+      unlisteners.forEach((stopListening) => stopListening());
     };
   }, []);
 
@@ -807,7 +824,10 @@ function App() {
   };
 
   const closeEntityDialog = () => updateActiveTabModalState((current) => ({ ...current, entityDialog: null }));
-  const closePromptDialog = () => updateActiveTabModalState((current) => ({ ...current, promptDialog: null }));
+  const closePromptDialog = () => {
+    if (exitRequestedRef.current) cancelWindowCloseReview();
+    updateActiveTabModalState((current) => ({ ...current, promptDialog: null }));
+  };
   const closePromptViewer = () => updateActiveTabModalState((current) => ({ ...current, promptViewer: null }));
   const closeMoveDialog = () => updateActiveTabModalState((current) => ({ ...current, moveDialog: null }));
   const closeConfirmation = () => updateActiveTabModalState((current) => ({ ...current, confirmation: null }));
@@ -842,6 +862,7 @@ function App() {
   };
 
   const cancelWindowCloseReview = () => {
+    exitRequestedRef.current = false;
     const dirtyTabIds = getDirtyPromptTabIds(tabsRef.current, tabModalsRef.current);
     let nextModals = tabModalsRef.current;
     dirtyTabIds.forEach((tabId) => {
@@ -869,7 +890,7 @@ function App() {
       tabModalsRef.current = nextModals;
       setTabModals(nextModals);
       setWindowCloseReviewActive(false);
-      void destroyWindowAfterWorkspaceSave();
+      void finishWindowCloseAfterWorkspaceSave();
       return;
     }
 
@@ -894,7 +915,7 @@ function App() {
     tabModalsRef.current = nextModals;
     setTabModals(nextModals);
     setWindowCloseReviewActive(false);
-    void destroyWindowAfterWorkspaceSave();
+    void finishWindowCloseAfterWorkspaceSave();
   };
 
   const unlock = async (value: string) => {
@@ -2394,8 +2415,8 @@ function PromptEditor({
       <p className="confirm-copy">标题或提示词内容已经更改。关闭后，这些更改将无法恢复。</p>
       <div className="modal-actions">
         <button className="secondary-button" onClick={closeDiscardConfirm}>继续编辑</button>
-        {windowCloseReviewActive && dirtyPromptCount > 1 && <button className="danger-button" onClick={onDiscardAllForWindowClose}>全部不保存并关闭</button>}
-        <button className="danger-button" onClick={discardCurrent}>不保存并关闭</button>
+        {windowCloseReviewActive && dirtyPromptCount > 1 && <button className="danger-button" onClick={onDiscardAllForWindowClose}>{isMacOS ? "全部不保存并退出" : "全部不保存并关闭"}</button>}
+        <button className="danger-button" onClick={discardCurrent}>{isMacOS && windowCloseReviewActive ? "不保存并退出" : "不保存并关闭"}</button>
       </div>
     </Modal>}
   </>;

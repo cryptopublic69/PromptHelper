@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AppStatus, PromptData, WorkspaceState } from "../types";
 
 export const api = {
+  exit: () => invoke<void>("exit_app"),
   status: () => invoke<AppStatus>("get_app_status"),
   setDataDirectory: (directory: string) =>
     invoke<AppStatus>("set_data_directory", { directory }),

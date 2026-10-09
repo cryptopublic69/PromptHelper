@@ -2448,10 +2448,11 @@ dependencies = [
 
 [[package]]
 name = "prompt-helper"
-version = "5.2.4"
+version = "5.2.5"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.3.4",
+ "objc2",
  "pbkdf2",
  "serde",
  "serde_json",

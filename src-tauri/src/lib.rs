@@ -10,9 +10,56 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::RwLock,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        RwLock,
+    },
 };
+#[cfg(target_os = "macos")]
+use tauri::Emitter;
 use tauri::{Manager, State};
+#[cfg(target_os = "macos")]
+mod macos_lifecycle;
+
+#[derive(Default)]
+struct AppLifecycle {
+    exit_approved: AtomicBool,
+}
+
+// The frontend calls this only after reviewing drafts and flushing saves.
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle, lifecycle: State<'_, AppLifecycle>) {
+    lifecycle.exit_approved.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
+#[cfg(target_os = "macos")]
+fn restore_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(error) = window
+            .show()
+            .and_then(|_| window.unminimize())
+            .and_then(|_| window.set_focus())
+        {
+            eprintln!("无法恢复窗口：{error}");
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_app_exit(app: &tauri::AppHandle) {
+    restore_main_window(app);
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(error) = window.emit("app-quit-requested", ()) {
+            eprintln!("无法请求退出：{error}");
+        }
+    } else {
+        app.state::<AppLifecycle>()
+            .exit_approved
+            .store(true, Ordering::SeqCst);
+        app.exit(0);
+    }
+}
 
 const ITERATIONS: u32 = 480_000;
 const SALT_LENGTH: usize = 32;
@@ -387,6 +434,7 @@ fn export_plaintext_file(path: String, data: Value) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(AppLifecycle::default())
         .setup(|app| {
             let app_config_dir = app.path().app_config_dir()?;
             let default_data_path = app.path().app_data_dir()?.join("prompts_data.json");
@@ -400,12 +448,16 @@ pub fn run() {
                 path_configurable,
             });
             #[cfg(target_os = "macos")]
-            install_macos_menu(app)?;
+            {
+                macos_lifecycle::install(app.handle())?;
+                install_macos_menu(app)?;
+            }
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            exit_app,
             get_app_status,
             set_data_directory,
             load_data,
@@ -415,16 +467,32 @@ pub fn run() {
             import_plaintext_file,
             export_plaintext_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            match _event {
+                tauri::RunEvent::Reopen { .. } => restore_main_window(_app),
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    if !_app
+                        .state::<AppLifecycle>()
+                        .exit_approved
+                        .load(Ordering::SeqCst)
+                    {
+                        api.prevent_exit();
+                        request_app_exit(_app);
+                    }
+                }
+                _ => {}
+            }
+        });
 }
 
 #[cfg(target_os = "macos")]
 fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
-    // Use a custom Quit item so unsaved editors receive the same close review
-    // as the native red window button instead of terminating immediately.
+    // Quitting reviews drafts; closing the red window button only hides it.
     let quit = MenuItem::with_id(app, "quit", "退出 PromptHelper", true, Some("CmdOrCtrl+Q"))?;
     let application = Submenu::with_items(
         app,
@@ -467,11 +535,7 @@ fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
     app.set_menu(Menu::with_items(app, &[&application, &edit, &window])?)?;
     app.on_menu_event(|app, event| {
         if event.id().as_ref() == "quit" {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.close();
-            } else {
-                app.exit(0);
-            }
+            request_app_exit(app);
         }
     });
     Ok(())
