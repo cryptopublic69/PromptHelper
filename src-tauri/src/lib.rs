@@ -67,7 +67,7 @@ fn load_configured_data_path(config_path: &Path) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
-fn resolve_data_path(config_path: &Path) -> PathBuf {
+fn resolve_data_path(config_path: &Path, default_data_path: &Path) -> PathBuf {
     if let Some(path) = std::env::var_os("PROMPT_HELPER_DATA_FILE") {
         return PathBuf::from(path);
     }
@@ -80,6 +80,18 @@ fn resolve_data_path(config_path: &Path) -> PathBuf {
         return PathBuf::from(path);
     }
 
+    resolve_default_data_path(default_data_path)
+}
+
+// A macOS app bundle can be read-only, moved or replaced during an update.
+// User data must live outside it, including when running in development.
+#[cfg(target_os = "macos")]
+fn resolve_default_data_path(default_data_path: &Path) -> PathBuf {
+    default_data_path.to_path_buf()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_default_data_path(_default_data_path: &Path) -> PathBuf {
     let executable_path = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|parent| parent.join("prompts_data.json")));
@@ -376,21 +388,19 @@ fn export_plaintext_file(path: String, data: Value) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let app_config_dir = app.path().app_config_dir().unwrap_or_else(|_| {
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|path| path.parent().map(Path::to_path_buf))
-                    .unwrap_or_else(|| PathBuf::from("."))
-            });
+            let app_config_dir = app.path().app_config_dir()?;
+            let default_data_path = app.path().app_data_dir()?.join("prompts_data.json");
             let data_path_config = app_config_dir.join("database-location.json");
             let workspace_state_path = app_config_dir.join("workspace-state.json");
             let path_configurable = std::env::var_os("PROMPT_HELPER_DATA_FILE").is_none();
             app.manage(AppState {
-                data_path: RwLock::new(resolve_data_path(&data_path_config)),
+                data_path: RwLock::new(resolve_data_path(&data_path_config, &default_data_path)),
                 data_path_config,
                 workspace_state_path,
                 path_configurable,
             });
+            #[cfg(target_os = "macos")]
+            install_macos_menu(app)?;
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -409,10 +419,77 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+#[cfg(target_os = "macos")]
+fn install_macos_menu(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    // Use a custom Quit item so unsaved editors receive the same close review
+    // as the native red window button instead of terminating immediately.
+    let quit = MenuItem::with_id(app, "quit", "退出 PromptHelper", true, Some("CmdOrCtrl+Q"))?;
+    let application = Submenu::with_items(
+        app,
+        "PromptHelper",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, Some("关于 PromptHelper"), None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, Some("隐藏 PromptHelper"))?,
+            &PredefinedMenuItem::hide_others(app, Some("隐藏其他应用"))?,
+            &PredefinedMenuItem::show_all(app, Some("显示全部"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "编辑",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, Some("撤销"))?,
+            &PredefinedMenuItem::redo(app, Some("重做"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, Some("剪切"))?,
+            &PredefinedMenuItem::copy(app, Some("复制"))?,
+            &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+            &PredefinedMenuItem::select_all(app, Some("全选"))?,
+        ],
+    )?;
+    let window = Submenu::with_items(
+        app,
+        "窗口",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, Some("最小化"))?,
+            &PredefinedMenuItem::maximize(app, Some("缩放"))?,
+            &PredefinedMenuItem::fullscreen(app, Some("进入或退出全屏"))?,
+        ],
+    )?;
+    app.set_menu(Menu::with_items(app, &[&application, &edit, &window])?)?;
+    app.on_menu_event(|app, event| {
+        if event.id().as_ref() == "quit" {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.close();
+            } else {
+                app.exit(0);
+            }
+        }
+    });
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_default_database_stays_outside_the_application_bundle() {
+        let user_data = PathBuf::from(
+            "/Users/test/Library/Application Support/com.raydio.prompthelper/prompts_data.json",
+        );
+        assert_eq!(resolve_default_data_path(&user_data), user_data);
+    }
 
     #[test]
     fn decrypts_python_v4_compatible_fixture() {
@@ -449,6 +526,53 @@ mod tests {
             "wrong-password"
         )
         .is_err());
+    }
+
+    #[test]
+    fn safe_write_replaces_database_in_a_unicode_directory() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("提示词资料库-{}-{unique}", std::process::id()));
+        let data_path = directory.join("prompts_data.json");
+        let original = serde_json::json!({"图像": {"人物": ["初始内容"]}});
+        let updated = serde_json::json!({"图像": {"人物": ["更新内容，保留中文与 emoji 🎬"]}});
+        write_safely(&data_path, &original.to_string()).expect("create database");
+        write_safely(&data_path, &updated.to_string()).expect("replace database");
+        assert_eq!(
+            serde_json::from_str::<Value>(&read_raw(&data_path).unwrap()).unwrap(),
+            updated
+        );
+        assert!(!data_path.with_extension("json.tmp").exists());
+        assert!(!data_path.with_extension("json.bak").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn encrypted_database_survives_disk_round_trip() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "prompt-helper-encrypted-{}-{unique}.json",
+            std::process::id()
+        ));
+        let original = serde_json::json!({"视频": {"分镜": ["雨夜街头"]}});
+        let encrypted = encrypt_legacy(&original, "中文密码123").unwrap();
+        write_safely(&path, &encrypted).unwrap();
+        let stored = read_raw(&path).unwrap();
+        assert_eq!(
+            decrypt_legacy(
+                stored.strip_prefix(ENCRYPTED_PREFIX).unwrap(),
+                "中文密码123"
+            )
+            .unwrap(),
+            original
+        );
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

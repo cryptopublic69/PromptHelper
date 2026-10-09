@@ -1,6 +1,6 @@
 # PromptHelper V5
 
-PromptHelper V5 是一个完全本地运行的 Windows 提示词资料库与多标签工作台，用于分类整理、搜索、编辑和快速复制常用提示词。
+PromptHelper V5 是一个完全本地运行的 Windows / macOS 提示词资料库与多标签工作台，用于分类整理、搜索、编辑和快速复制常用提示词。
 
 本项目是旧版 Tkinter PromptHelper 的 Tauri 2 + React + TypeScript 重构版，兼容 V4 的明文 JSON 数据，以及以 `ENC:` 开头的密码保护数据。它不调用 AI 模型，也不依赖云端服务，资料默认保存在本机。
 
@@ -120,7 +120,9 @@ PromptHelper V5 可直接读取旧版 V4 的 `ENC:` 密码保护数据，无需�
 
 ## 数据文件位置
 
-程序按照以下顺序解析 `prompts_data.json`：
+macOS 默认资料库位于 `~/Library/Application Support/com.raydio.prompthelper/prompts_data.json`，不会写入 `.app` 应用包。环境变量和启动页面选择的资料库目录仍具有优先权；macOS 不自动寻找 Windows 开发环境的旧数据路径。
+
+Windows 按照以下顺序解析 `prompts_data.json`：
 
 1. 环境变量 `PROMPT_HELPER_DATA_FILE` 指向的路径
 2. 启动页面中上次选择并保存在应用配置目录里的资料库路径
@@ -171,13 +173,13 @@ PromptHelper V5 可直接读取旧版 V4 的 `ENC:` 密码保护数据，无需�
 
 | 层级 | 技术 | 作用 |
 | --- | --- | --- |
-| 桌面外壳 | Tauri 2 | Windows 窗口、权限与前后端通信 |
+| 桌面外壳 | Tauri 2 | 跨平台窗口、权限与前后端通信 |
 | 前端界面 | React 19 + TypeScript | 资料库界面、标签、搜索与编辑交互 |
 | 构建工具 | Vite 7 | 前端开发与生产构建 |
 | 本地后端 | Rust | 数据路径解析、JSON 读写、加密兼容与安全保存 |
 | 本地数据 | JSON | 保存全部类型、分类和提示词 |
 | 图标 | Lucide React | 界面图标 |
-| 安装程序 | NSIS | 生成 Windows 安装包 |
+| 安装程序 | NSIS / DMG | 生成 Windows 或 macOS 安装包 |
 
 前端通过 Tauri Command 调用 Rust 后端，主要命令包括：
 
@@ -206,6 +208,51 @@ PromptHelper/
 ├─ package.json
 └─ README.md
 ```
+
+## macOS 版本（5.2.4）
+
+- 字体采用 macOS 系统字体栈，中文、英文按系统字体回退；Mac 控件最低 13px，正文最低 14px，辅助文字最低 11px。保留原有字号设置，修复初次启动误用 14px 的问题。
+- 使用一体化顶部工作栏，左侧放置 macOS 原生红黄绿窗口按钮，隐藏独立系统标题栏，以及应用、编辑、窗口菜单
+- `⌘T` 新建工作标签，`⌘W` 关闭当前工作标签，`⌘F` 搜索
+- 编辑器中用 `⌘Enter` 或 `⌘S` 保存；中文输入法组字期间不会触发保存
+- 支持原生剪切、复制、粘贴、全选、撤销、重做和全屏
+- `⌘Q` 与窗口关闭均先检查未保存的编辑内容，并等待进行中的数据保存
+- 保留 Windows 的 JSON / `ENC:` 格式；启动页可选择旧资料库所在文件夹
+- 构建目标为 macOS 11.0 及以上；通用包同时包含 Apple Silicon 与 Intel 架构。旧系统与 Intel 实机仍需单独验收
+
+### 安装与资料迁移
+
+打开 `release/5.2.4/macOS/` 中的 DMG，将 PromptHelper 拖入「应用程序」。首次启动显示资料库打开页面，可直接使用默认目录，也可选择包含 `prompts_data.json` 的文件夹。迁移 Windows 资料时，先复制原 JSON 文件，再选择副本所在文件夹；加密资料可使用原密码打开。
+
+本机生成的包使用 ad hoc 签名，不包含 Apple Developer ID 签名或公证。对外发布前，需要配置自己的发布证书及公证凭据。不要把本地构建描述为已经通过 Apple 公证或 App Store 审核。
+
+### 开发与构建
+
+需要 Node.js 22.12+、当前稳定版 Rust 和 Xcode Command Line Tools。第一次安装工具链：
+
+```bash
+xcode-select --install
+# 安装 Rust：https://rustup.rs
+npm ci
+npm run dev:mac
+```
+
+也可双击 `start-dev.command` 启动开发版。
+
+```bash
+npm run build
+npm run test:rust
+# 为本机架构打包
+npm run build:mac
+# 为 Intel + Apple Silicon 打通用包
+export PATH="$HOME/.cargo/bin:$PATH"
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+npm run build:mac:universal
+```
+
+双击 `build-mac.command` 也可构建通用包。默认构建输出位于 `src-tauri/target/release/bundle/`；通用包位于 `src-tauri/target/universal-apple-darwin/release/bundle/`。构建脚本使用 Cargo.lock 锁定 Rust 依赖。
+
+公开分发的签名和公证配置见 [Tauri 官方说明](https://v2.tauri.app/distribute/sign/macos/)。设置 `APPLE_SIGNING_IDENTITY` 和对应公证凭据后重新构建，完成公证后再分发。
 
 ## 开发环境
 
@@ -249,7 +296,7 @@ C:\Users\Raydio\.cargo\bin\cargo.exe test --manifest-path .\src-tauri\Cargo.toml
 npm run tauri build
 ```
 
-默认生成 NSIS 安装包，当前项目版本为 `5.2.0`。
+默认生成 NSIS 安装包，当前项目版本为 `5.2.4`。
 
 ## 当前功能边界
 

@@ -48,7 +48,9 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import appIconUrl from "../src-tauri/icons/app-icon.svg";
 import "./App.css";
+import "./mac-typography.css";
 import { api } from "./lib/api";
+import { hasPrimaryModifier, isMacOS, shortcutModifier } from "./lib/platform";
 import {
   cloneData,
   countPrompts,
@@ -119,8 +121,10 @@ const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
 const readInitialFontSize = () => {
-  const stored = Number(localStorage.getItem(FONT_SIZE_STORAGE_KEY));
-  return Number.isFinite(stored) ? Math.min(20, Math.max(14, stored)) : 16;
+  const raw = localStorage.getItem(FONT_SIZE_STORAGE_KEY);
+  if (raw === null || raw.trim() === "") return 16;
+  const stored = Number(raw);
+  return Number.isFinite(stored) && stored > 0 ? Math.min(20, Math.max(14, stored)) : 16;
 };
 
 const readInitialTheme = (): ThemeMode =>
@@ -229,6 +233,7 @@ const runWindowAction = (action: () => Promise<void>) => {
 };
 
 function WindowControls() {
+  if (isMacOS) return null;
   return (
     <div className="window-controls">
       <button onClick={() => runWindowAction(() => appWindow.minimize())} title="最小化" aria-label="最小化">
@@ -437,6 +442,7 @@ function App() {
   const activeTabIdRef = useRef("");
   const tabModalsRef = useRef<Record<string, TabModalState>>({});
   const workspaceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const dataSaveRef = useRef<Promise<void> | null>(null);
   const allowWindowCloseRef = useRef(false);
   const tabPointerDragRef = useRef<{
     sourceTabId: string;
@@ -491,13 +497,14 @@ function App() {
 
   const destroyWindowAfterWorkspaceSave = async () => {
     try {
+      await dataSaveRef.current;
       await saveWorkspaceStateBeforeClose();
     } catch (error) {
-      console.error("关闭前保存工作区状态失败", error);
-    } finally {
-      allowWindowCloseRef.current = true;
-      await appWindow.destroy();
+      setToast({ kind: "error", message: `关闭前保存失败：${errorMessage(error)}` });
+      return;
     }
+    allowWindowCloseRef.current = true;
+    await appWindow.destroy();
   };
 
   const focusDirtyPromptTabForWindowClose = (dirtyTabIds: string[]) => {
@@ -591,10 +598,18 @@ function App() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let disposed = false;
 
     void appWindow.onCloseRequested(async (event) => {
       if (allowWindowCloseRef.current) return;
       event.preventDefault();
+
+      try {
+        await dataSaveRef.current;
+      } catch (error) {
+        setToast({ kind: "error", message: `资料库尚未保存：${errorMessage(error)}` });
+        return;
+      }
 
       const dirtyTabIds = getDirtyPromptTabIds(tabsRef.current, tabModalsRef.current);
       if (dirtyTabIds.length) {
@@ -604,10 +619,14 @@ function App() {
 
       await destroyWindowAfterWorkspaceSave();
     }).then((stopListening) => {
-      unlisten = stopListening;
+      if (disposed) stopListening();
+      else unlisten = stopListening;
     });
 
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -617,6 +636,7 @@ function App() {
 
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme;
+    if (isMacOS) runWindowAction(() => appWindow.setTheme(theme));
     document.documentElement.style.colorScheme = theme;
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
@@ -913,8 +933,10 @@ function App() {
   const persist = async (next: PromptData, message: string, nextPassword = password) => {
     const cleaned = normalizePromptData(next).data;
     setBusy(true);
+    const saving = api.save(cleaned, nextPassword);
+    dataSaveRef.current = saving;
     try {
-      await api.save(cleaned, nextPassword);
+      await saving;
       setData(cleaned);
       setToast({ kind: "success", message });
       return true;
@@ -922,6 +944,7 @@ function App() {
       setToast({ kind: "error", message: errorMessage(error) });
       return false;
     } finally {
+      if (dataSaveRef.current === saving) dataSaveRef.current = null;
       setBusy(false);
     }
   };
@@ -1130,11 +1153,12 @@ function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (phase !== "ready" || entityDialog || promptDialog || promptViewer || confirmation || moveLocation || importDraft || securityMode || settingsOpen) return;
-      if (event.ctrlKey && event.key.toLowerCase() === "t") {
+      if (event.isComposing || event.altKey || event.shiftKey) return;
+      if (hasPrimaryModifier(event) && event.key.toLowerCase() === "t") {
         event.preventDefault(); addTab();
-      } else if (event.ctrlKey && event.key.toLowerCase() === "w") {
+      } else if (hasPrimaryModifier(event) && event.key.toLowerCase() === "w") {
         event.preventDefault(); if (activeTab) closeTab(activeTab.id);
-      } else if (event.ctrlKey && event.key.toLowerCase() === "f") {
+      } else if (hasPrimaryModifier(event) && event.key.toLowerCase() === "f") {
         event.preventDefault(); searchRef.current?.focus();
       }
     };
@@ -1716,7 +1740,7 @@ function App() {
               </div>;
             })}
           </div>
-          <button className="new-tab" onClick={addTab} title="新建标签 (Ctrl+T)"><Plus size={17} /></button>
+          <button className="new-tab" onClick={addTab} title={`新建标签 (${shortcutModifier}+T)`}><Plus size={17} /></button>
         </div>
         <div className="library-actions">
           <button onClick={importFile} title="导入 JSON"><Download size={17} /></button>
@@ -1983,7 +2007,7 @@ function App() {
               <Search size={17} />
               <input ref={searchRef} value={activeTab.search} onChange={(event) => patchTab(activeTab.id, { search: event.target.value })} placeholder="搜索所有标题和内容…" />
               {activeTab.search && <button onClick={() => patchTab(activeTab.id, { search: "" })}><X size={15} /></button>}
-              <kbd>Ctrl F</kbd>
+              <kbd>{shortcutModifier} F</kbd>
             </div>
             <button className="primary-button" disabled={!activeTab.categoryName || Boolean(activeTab.search)} onClick={() => openPromptDialog({ mode: "add" })}><Plus size={17} />添加内容</button>
           </div>
@@ -2342,7 +2366,17 @@ function PromptEditor({
 
   return <>
     <Modal wide className="prompt-editor-modal" title={dialog.mode === "add" ? "添加提示词" : "编辑提示词"} subtitle="标题可选；复制时只会复制正文内容" onClose={requestClose} icon={<FileText size={19} />}>
-      <form className="prompt-editor-form" onSubmit={(event) => { event.preventDefault(); onSave(dialog.title, dialog.content); }}>
+      <form
+        className="prompt-editor-form"
+        onSubmit={(event) => { event.preventDefault(); onSave(dialog.title, dialog.content); }}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.altKey || event.shiftKey) return;
+          if (hasPrimaryModifier(event) && (event.key === "Enter" || event.key.toLowerCase() === "s")) {
+            event.preventDefault();
+            if (dialog.title.trim() || dialog.content.trim()) onSave(dialog.title, dialog.content);
+          }
+        }}
+      >
         <label className="field-label">标题 <span>可选</span></label>
         <input className="text-input" autoFocus value={dialog.title} onChange={(event) => onChange({ title: event.target.value })} placeholder="例如：电影感人物特写" />
         <label className="field-label field-spaced">提示词内容</label>
@@ -2350,15 +2384,9 @@ function PromptEditor({
           className="text-area prompt-editor-area"
           value={dialog.content}
           onChange={(event) => onChange({ content: event.target.value })}
-          onKeyDown={(event) => {
-            if ((event.ctrlKey && event.key === "Enter") || (event.ctrlKey && event.key.toLowerCase() === "s")) {
-              event.preventDefault();
-              if (dialog.title.trim() || dialog.content.trim()) onSave(dialog.title, dialog.content);
-            }
-          }}
           placeholder="输入完整提示词…"
         />
-        <div className="editor-meta"><span>{dialog.content.length} 字符</span><span>Ctrl + Enter 保存</span></div>
+        <div className="editor-meta"><span>{dialog.content.length} 字符</span><span>{shortcutModifier} + Enter 保存</span></div>
         <div className="modal-actions"><button type="button" className="secondary-button" onClick={requestClose}>取消</button><button className="primary-button" disabled={!dialog.title.trim() && !dialog.content.trim()}><Check size={16} />保存</button></div>
       </form>
     </Modal>

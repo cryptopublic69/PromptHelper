@@ -1,0 +1,48 @@
+/* Let WebKit select the native SF and Chinese system fonts. Keep a readable
+   minimum even for an existing 14px setting, while retaining larger presets. */
+html[data-platform="macos"] {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  -webkit-font-smoothing: auto;
+  text-rendering: auto;
+  font-weight: 400;
+  line-height: 1.5;
+  --font-caption-small: max(11px, .6875rem);
+  --font-caption: max(12px, .75rem);
+  --font-secondary: max(12px, .75rem);
+  --font-control: max(13px, .8125rem);
+  --font-label: max(14px, .875rem);
+  --font-tree: max(14px, .875rem);
+  --font-heading: max(16px, 1rem);
+}
+
+html[data-platform="macos"] :is(.brand strong, .unlock-card h1, .workspace-title h1, .modal-header h2, .sidebar-section > header, .library-tree-section > header > span, .font-size-preview span) {
+  letter-spacing: normal;
+}
+
+html[data-platform="macos"] :is(.primary-button, .secondary-button, .danger-button, .field-label, .library-overview strong, .sidebar-footer strong, .settings-section > header > span) {
+  font-weight: 500;
+}
+
+html[data-platform="macos"] :is(.prompt-content p, .prompt-viewer-content) {
+  font-size: max(14px, .875rem);
+  line-height: 1.65;
+}
+
+html[data-platform="macos"] :is(.text-input, .text-area) {
+  font-size: max(14px, .9375rem);
+  line-height: 1.6;
+}
+
+html[data-platform="macos"] .prompt-content h3 { line-height: 1.5; }
+html[data-platform="macos"] .workspace-tab { width: min(155px, 20vw); }
+/* Native traffic lights occupy the left end of the same 45px toolbar. */
+html[data-platform="macos"] .tabs-app-logo { width: 96px; height: 44px; margin: 0; }
+html[data-platform="macos"] .standalone-window-bar { left: 96px; }
+html[data-platform="macos"] .sidebar-footer small { line-height: 1.5; }
+html[data-platform="macos"] .workspace-header { gap: 16px; }
+html[data-platform="macos"] .library-actions { margin-right: var(--workspace-header-gutter); }
+html[data-platform="macos"] .modal-header p { line-height: 1.5; }
+html[data-platform="macos"] .theme-options { gap: 8px; }
+
+/* Remove the WebKit default monospace font from shortcut hints. */
+html[data-platform="macos"] kbd { font-family: inherit; }
